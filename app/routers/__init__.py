@@ -1,6 +1,3 @@
-from fastapi import APIRouter
-from app.routers import picks, parlays
+from app.routers import picks, parlays, health, dashboard, pipeline, config
 
-router = APIRouter()
-router.include_router(picks.router, prefix="/picks", tags=["picks"])
-router.include_router(parlays.router, prefix="/parlays", tags=["parlays"])
+__all__ = ["picks", "parlays", "health", "dashboard", "pipeline", "config"]
