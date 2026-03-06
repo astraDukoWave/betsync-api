@@ -1,21 +1,29 @@
-from pydantic import BaseModel
-from typing import Optional
 from datetime import datetime
+from uuid import UUID
+
+from pydantic import BaseModel, ConfigDict
 
 
-class SportsbookBase(BaseModel):
+class SportsbookCreate(BaseModel):
     name: str
-    url: Optional[str] = None
+    currency: str = "MXN"
+    odds_format_default: str = "american"
     is_active: bool = True
 
 
-class SportsbookCreate(SportsbookBase):
-    pass
+class SportsbookUpdate(BaseModel):
+    name: str | None = None
+    currency: str | None = None
+    odds_format_default: str | None = None
+    is_active: bool | None = None
 
 
-class SportsbookRead(SportsbookBase):
-    id: int
+class SportsbookResponse(BaseModel):
+    sportsbook_id: UUID
+    name: str
+    currency: str
+    odds_format_default: str
+    is_active: bool
     created_at: datetime
-    updated_at: Optional[datetime] = None
 
-    model_config = {"from_attributes": True}
+    model_config = ConfigDict(from_attributes=True)

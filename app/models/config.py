@@ -1,19 +1,20 @@
-from sqlalchemy import Column, Integer, String, Boolean, DateTime, Text
+import uuid
 from datetime import datetime
+from typing import Optional
+
+from sqlalchemy import String, Text, DateTime, func
+from sqlalchemy.orm import Mapped, mapped_column
+
 from app.core.database import Base
 
 
 class SystemConfig(Base):
-    """Dynamic system configuration stored in the database (Paso 11)."""
-    __tablename__ = "system_configs"
+    __tablename__ = "config"
 
-    id = Column(Integer, primary_key=True, index=True)
-    key = Column(String(100), nullable=False, unique=True, index=True)
-    value = Column(Text, nullable=False)
-    description = Column(Text, nullable=True)
-    is_active = Column(Boolean, default=True, nullable=False)
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
-
-    def __repr__(self) -> str:
-        return f"<SystemConfig(key={self.key!r}, active={self.is_active})>"
+    config_id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    key: Mapped[str] = mapped_column(String(100), unique=True, nullable=False)
+    value: Mapped[str] = mapped_column(Text, nullable=False)
+    description: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )

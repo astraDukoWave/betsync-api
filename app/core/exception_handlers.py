@@ -21,7 +21,7 @@ def register_exception_handlers(app: FastAPI):
     async def validation_handler(request: Request, exc: RequestValidationError):
         errors = exc.errors()
         first = errors[0] if errors else {}
-        return JSONResponse(status_code=422, content={"error": {"code": "VALIDATION_ERROR", "message": str(first.get("msg", "Validation error")), "field": ".".join(str(l) for l in first.get("loc", [])), "meta": {"errors": errors}}})
+        return JSONResponse(status_code=422, content={"error": {"code": "VALIDATION_ERROR", "message": str(first.get("msg", "Validation error")), "field": ".".join(str(loc) for loc in first.get("loc", [])), "meta": {"errors": errors}}})
 
     @app.exception_handler(Exception)
     async def unhandled_handler(request: Request, exc: Exception):

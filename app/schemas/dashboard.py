@@ -1,36 +1,32 @@
-from pydantic import BaseModel
 from typing import Optional
 
-
-class PickStats(BaseModel):
-    won: int
-    lost: int
-    pending: int
-    void: int
-    push: int
-    win_rate: float
+from pydantic import BaseModel
 
 
-class ParlayStats(BaseModel):
-    total: int
-    won: int
-    lost: int
-    pending: int
-    win_rate: float
-
-
-class ROIStats(BaseModel):
-    total_staked: float
-    total_returns: float
-    roi_percent: float
+class StreakInfo(BaseModel):
+    type: str
+    count: int
 
 
 class DashboardSummary(BaseModel):
     total_picks: int
-    total_parlays: int
-    pick_stats: PickStats
-    parlay_stats: ParlayStats
-    roi: Optional[ROIStats] = None
+    resolved_picks: int
+    won: int
+    lost: int
+    push: int
+    hit_rate: float
+    total_stake: float
+    total_return: float
+    roi: float
+    current_streak: StreakInfo
+    avg_odds_decimal: float
+    avg_clv: Optional[float] = None
+    cache_hit: bool = False
 
-    class Config:
-        from_attributes = True
+
+class SegmentResponse(BaseModel):
+    segment: str
+    picks: int
+    hit_rate: float
+    roi: float
+    avg_odds: float

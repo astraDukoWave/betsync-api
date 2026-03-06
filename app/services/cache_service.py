@@ -1,36 +1,37 @@
 import json
+import logging
 from typing import Any, Optional
-from redis.asyncio import Redis
+
+logger = logging.getLogger(__name__)
 
 
-class CacheService:
-    """Redis-backed cache service with JSON serialization."""
+async def get_cache(redis, key: str) -> Optional[dict]:
+    try:
+        raw = await redis.get(key)
+        return json.loads(raw) if raw else None
+    except Exception:
+        logger.debug("Redis cache miss (error) for key: %s", key)
+        return None
 
-    def __init__(self, redis: Redis):
-        self.redis = redis
 
-    async def get(self, key: str) -> Optional[Any]:
-        """Retrieve a cached value by key. Returns None on cache miss."""
-        raw = await self.redis.get(key)
-        if raw is None:
-            return None
-        return json.loads(raw)
+async def set_cache(redis, key: str, value: Any, ttl: int = 300) -> None:
+    try:
+        await redis.set(key, json.dumps(value, default=str), ex=ttl)
+    except Exception:
+        logger.debug("Redis set failed for key: %s", key)
 
-    async def set(self, key: str, value: Any, ttl: int = 300) -> None:
-        """Store a value in cache with optional TTL (seconds)."""
-        await self.redis.set(key, json.dumps(value), ex=ttl)
 
-    async def delete(self, key: str) -> None:
-        """Delete a key from cache."""
-        await self.redis.delete(key)
+async def delete_cache(redis, key: str) -> None:
+    try:
+        await redis.delete(key)
+    except Exception:
+        pass
 
-    async def exists(self, key: str) -> bool:
-        """Check if a key exists in cache."""
-        return await self.redis.exists(key) > 0
 
-    async def flush_pattern(self, pattern: str) -> int:
-        """Delete all keys matching a pattern. Returns count deleted."""
-        keys = await self.redis.keys(pattern)
+async def invalidate_dashboard_cache(redis) -> None:
+    try:
+        keys = await redis.keys("dashboard:summary:*")
         if keys:
-            return await self.redis.delete(*keys)
-        return 0
+            await redis.delete(*keys)
+    except Exception:
+        logger.debug("Redis dashboard cache invalidation failed")

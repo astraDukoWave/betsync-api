@@ -1,61 +1,38 @@
-from sqlalchemy.orm import Session
-from typing import List, Optional
+from typing import Optional
+from uuid import UUID
 
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.core.exceptions import NotFoundError
 from app.models.match import Match
-from app.schemas.match import MatchCreate, MatchRead
+from app.schemas.match import MatchCreate
 
 
-class MatchService:
-    """Service layer for Match CRUD and query operations."""
+async def create_match(db: AsyncSession, data: MatchCreate) -> Match:
+    match = Match(**data.model_dump())
+    db.add(match)
+    await db.flush()
+    return match
 
-    @staticmethod
-    def create(db: Session, data: MatchCreate) -> Match:
-        """Persist a new match record."""
-        match = Match(**data.model_dump())
-        db.add(match)
-        db.commit()
-        db.refresh(match)
-        return match
 
-    @staticmethod
-    def get_by_id(db: Session, match_id: int) -> Optional[Match]:
-        """Retrieve a match by its primary key."""
-        return db.query(Match).filter(Match.id == match_id).first()
+async def get_match(db: AsyncSession, match_id: UUID) -> Match:
+    match = await db.get(Match, match_id)
+    if not match:
+        raise NotFoundError("MATCH_NOT_FOUND", f"Match {match_id} not found")
+    return match
 
-    @staticmethod
-    def list_all(db: Session, skip: int = 0, limit: int = 100) -> List[Match]:
-        """Return a paginated list of all matches."""
-        return db.query(Match).offset(skip).limit(limit).all()
 
-    @staticmethod
-    def list_by_competition(
-        db: Session, competition_id: int, skip: int = 0, limit: int = 100
-    ) -> List[Match]:
-        """Return matches filtered by competition."""
-        return (
-            db.query(Match)
-            .filter(Match.competition_id == competition_id)
-            .offset(skip)
-            .limit(limit)
-            .all()
-        )
-
-    @staticmethod
-    def update_status(db: Session, match_id: int, new_status: str) -> Optional[Match]:
-        """Update the status of an existing match."""
-        match = db.query(Match).filter(Match.id == match_id).first()
-        if match:
-            match.status = new_status
-            db.commit()
-            db.refresh(match)
-        return match
-
-    @staticmethod
-    def delete(db: Session, match_id: int) -> bool:
-        """Delete a match record. Returns True if deleted."""
-        match = db.query(Match).filter(Match.id == match_id).first()
-        if match:
-            db.delete(match)
-            db.commit()
-            return True
-        return False
+async def list_matches(
+    db: AsyncSession,
+    competition_id: Optional[UUID] = None,
+    limit: int = 100,
+    offset: int = 0,
+) -> list[Match]:
+    query = select(Match)
+    if competition_id:
+        query = query.where(Match.competition_id == competition_id)
+    result = await db.execute(
+        query.order_by(Match.kickoff_at.desc()).limit(limit).offset(offset)
+    )
+    return list(result.scalars().all())

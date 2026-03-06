@@ -1,31 +1,24 @@
+from datetime import date
+from typing import Optional
+
 from pydantic import BaseModel
-from typing import Optional, Any
-from datetime import datetime
 
 
-class TaskStatus(BaseModel):
-    task_id: str
-    status: str  # PENDING | STARTED | SUCCESS | FAILURE | RETRY | REVOKED
-    result: Optional[Any] = None
-    error: Optional[str] = None
-    started_at: Optional[datetime] = None
-    completed_at: Optional[datetime] = None
+class PipelineRunRequest(BaseModel):
+    run_date: Optional[date] = None
+    force: bool = False
 
 
-class TriggerResponse(BaseModel):
+class PipelineJobResponse(BaseModel):
+    job_id: str
+    status: str
+    picks_suggested: Optional[int] = None
+    parlays_suggested: Optional[int] = None
+    completed_at: Optional[str] = None
+    duration_sec: Optional[float] = None
+
+
+class PipelineTriggerResponse(BaseModel):
+    job_id: str
+    status: str
     message: str
-    task_id: str
-
-
-class OddsFetchResult(BaseModel):
-    fetched_at: datetime
-    matches_processed: int
-    odds_updated: int
-    errors: int
-
-
-class SettlementResult(BaseModel):
-    settled_at: datetime
-    picks_settled: int
-    parlays_settled: int
-    errors: int
