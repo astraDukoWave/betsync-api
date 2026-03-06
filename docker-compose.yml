@@ -41,6 +41,7 @@ services:
       CELERY_RESULT_BACKEND: redis://redis:6379/2
       ODDS_API_KEY: ${ODDS_API_KEY:-your_odds_api_key_here}
       SECRET_KEY: ${SECRET_KEY:-changeme_in_production}
+      PYTHONPATH: /app
     ports:
       - "8000:8000"
     depends_on:
