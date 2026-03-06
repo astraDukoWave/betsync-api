@@ -1,3 +1,9 @@
-from app.routers import picks, parlays, health, dashboard, pipeline, config
+from app.routers import (
+    picks, parlays, dashboard, pipeline,
+    config, health, sportsbooks,
+)
 
-__all__ = ["picks", "parlays", "health", "dashboard", "pipeline", "config"]
+__all__ = [
+    "picks", "parlays", "dashboard", "pipeline",
+    "config", "health", "sportsbooks",
+]

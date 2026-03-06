@@ -1,24 +1,24 @@
-from pydantic import BaseModel
-from typing import Optional
 from datetime import datetime
+from uuid import UUID
+
+from pydantic import BaseModel, ConfigDict
 
 
-class CompetitionBase(BaseModel):
+class CompetitionCreate(BaseModel):
+    sport_id: UUID
     name: str
     country: str
-    region: str = "global"
-    tier: int = 1
-    external_id: Optional[str] = None
-    sport_id: int
+    tier: str = "A"
+    is_active: bool = True
 
 
-class CompetitionCreate(CompetitionBase):
-    pass
-
-
-class CompetitionRead(CompetitionBase):
-    id: int
+class CompetitionResponse(BaseModel):
+    competition_id: UUID
+    sport_id: UUID
+    name: str
+    country: str
+    tier: str
+    is_active: bool
     created_at: datetime
-    updated_at: Optional[datetime] = None
 
-    model_config = {"from_attributes": True}
+    model_config = ConfigDict(from_attributes=True)

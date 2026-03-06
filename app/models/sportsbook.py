@@ -1,22 +1,28 @@
-from sqlalchemy import Column, Integer, String, Boolean, DateTime
-from sqlalchemy.orm import relationship
+import uuid
 from datetime import datetime
+from typing import TYPE_CHECKING, List
+
+from sqlalchemy import String, Boolean, DateTime, func
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+
 from app.core.database import Base
+
+if TYPE_CHECKING:
+    from app.models.pick import Pick
+    from app.models.parlay import Parlay
 
 
 class Sportsbook(Base):
     __tablename__ = "sportsbooks"
 
-    id = Column(Integer, primary_key=True, index=True)
-    name = Column(String(100), nullable=False, unique=True)
-    slug = Column(String(100), nullable=False, unique=True, index=True)
-    base_url = Column(String(255), nullable=True)
-    is_active = Column(Boolean, default=True, nullable=False)
-    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    sportsbook_id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    name: Mapped[str] = mapped_column(String(100), unique=True, nullable=False)
+    currency: Mapped[str] = mapped_column(String(10), default="MXN")
+    odds_format_default: Mapped[str] = mapped_column(String(20), default="american")
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
 
-    # Relationships
-    odds = relationship("Odd", back_populates="sportsbook", lazy="select")
-
-    def __repr__(self) -> str:
-        return f"<Sportsbook(id={self.id}, name={self.name!r}, active={self.is_active})>"
+    picks: Mapped[List["Pick"]] = relationship(back_populates="sportsbook")
+    parlays: Mapped[List["Parlay"]] = relationship(back_populates="sportsbook")

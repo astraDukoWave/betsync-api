@@ -1,37 +1,19 @@
-from pydantic import BaseModel
-from typing import Optional
 from datetime import datetime
+from typing import Optional
+from uuid import UUID
+
+from pydantic import BaseModel, ConfigDict
 
 
-class SystemConfigBase(BaseModel):
+class ConfigResponse(BaseModel):
+    config_id: UUID
     key: str
     value: str
     description: Optional[str] = None
-    is_active: bool = True
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
 
 
-class SystemConfigCreate(SystemConfigBase):
-    pass
-
-
-class SystemConfigUpdate(BaseModel):
-    value: Optional[str] = None
-    description: Optional[str] = None
-    is_active: Optional[bool] = None
-
-
-class SystemConfigRead(SystemConfigBase):
-    id: int
-    created_at: datetime
-    updated_at: Optional[datetime] = None
-
-    class Config:
-        from_attributes = True
-
-
-class AppConfigResponse(BaseModel):
-    """Non-sensitive runtime config returned by the /config endpoint."""
-    app_name: str
-    version: str
-    debug: bool
-    odds_api_base_url: str
+class ConfigUpdate(BaseModel):
+    value: str

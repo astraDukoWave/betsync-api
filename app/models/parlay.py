@@ -1,54 +1,55 @@
-from sqlalchemy import Column, Integer, String, ForeignKey, DateTime, Numeric, Enum as SAEnum, Text
-from sqlalchemy.orm import relationship
-from datetime import datetime
 import enum
+import uuid
+from datetime import date, datetime
+from decimal import Decimal
+from typing import TYPE_CHECKING, List, Optional
+
+from sqlalchemy import String, Date, DateTime, Numeric, ForeignKey, func
+from sqlalchemy import Enum as SAEnum
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+
 from app.core.database import Base
+
+if TYPE_CHECKING:
+    from app.models.sportsbook import Sportsbook
+    from app.models.parlay_pick import ParlayPick
 
 
 class ParlayStatus(str, enum.Enum):
-    open = "open"       # picks still pending
+    pending = "pending"
     won = "won"
     lost = "lost"
-    partial = "partial"  # some picks won, some lost
-    void = "void"
+
+
+class ParlayType(str, enum.Enum):
+    regular = "regular"
+    bonus = "bonus"
 
 
 class Parlay(Base):
     __tablename__ = "parlays"
 
-    id = Column(Integer, primary_key=True, index=True)
-    name = Column(String(200), nullable=True)  # e.g. "Ticket A - 2025-06-20"
-    stake = Column(Numeric(10, 2), nullable=False, default=75.00)  # $75 MXN default
-    total_odds = Column(Numeric(10, 3), nullable=True)  # product of all odds
-    potential_payout = Column(Numeric(10, 2), nullable=True)
-    actual_payout = Column(Numeric(10, 2), nullable=True)
-    status = Column(SAEnum(ParlayStatus), default=ParlayStatus.open)
-    notes = Column(Text, nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    parlay_id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    sportsbook_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("sportsbooks.sportsbook_id"), nullable=False
+    )
+    run_date: Mapped[date] = mapped_column(Date, nullable=False)
+    type: Mapped[ParlayType] = mapped_column(
+        SAEnum(ParlayType, name="parlay_type"), default=ParlayType.regular
+    )
+    stake: Mapped[Decimal] = mapped_column(Numeric(10, 2), nullable=False)
+    odds_total: Mapped[Decimal] = mapped_column(Numeric(8, 4), nullable=False)
+    potential_return: Mapped[Decimal] = mapped_column(Numeric(10, 2), nullable=False)
+    actual_return: Mapped[Optional[Decimal]] = mapped_column(Numeric(10, 2), nullable=True)
+    status: Mapped[ParlayStatus] = mapped_column(
+        SAEnum(ParlayStatus, name="parlay_status"), default=ParlayStatus.pending
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
 
-    # Relationships
-    parlay_picks = relationship("ParlayPick", back_populates="parlay", cascade="all, delete-orphan")
-
-    def __repr__(self):
-        return f"<Parlay id={self.id} stake={self.stake} status={self.status} total_odds={self.total_odds}>"
-
-
-class ParlayPick(Base):
-    """Association table: many-to-many between Parlay and Pick"""
-    __tablename__ = "parlay_picks"
-
-    id = Column(Integer, primary_key=True, index=True)
-    position = Column(Integer, default=1)  # order in the parlay ticket
-    created_at = Column(DateTime, default=datetime.utcnow)
-
-    # FKs
-    parlay_id = Column(Integer, ForeignKey("parlays.id"), nullable=False)
-    pick_id = Column(Integer, ForeignKey("picks.id"), nullable=False)
-
-    # Relationships
-    parlay = relationship("Parlay", back_populates="parlay_picks")
-    pick = relationship("Pick", back_populates="parlay_picks")
-
-    def __repr__(self):
-        return f"<ParlayPick parlay_id={self.parlay_id} pick_id={self.pick_id} position={self.position}>"
+    sportsbook: Mapped["Sportsbook"] = relationship(back_populates="parlays")
+    parlay_picks: Mapped[List["ParlayPick"]] = relationship(back_populates="parlay")

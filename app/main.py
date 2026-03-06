@@ -1,15 +1,19 @@
 from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+
 from app.core.database import engine
+from app.core.dependencies import close_redis
 from app.core.exception_handlers import register_exception_handlers
-from app.routers import picks, parlays, dashboard, pipeline, config, health
+from app.routers import picks, parlays, dashboard, pipeline, config, health, sportsbooks
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     yield
     await engine.dispose()
+    await close_redis()
 
 
 def create_app() -> FastAPI:
@@ -36,6 +40,7 @@ def create_app() -> FastAPI:
     app.include_router(dashboard.router, prefix="/api/v1", tags=["dashboard"])
     app.include_router(pipeline.router, prefix="/api/v1", tags=["pipeline"])
     app.include_router(config.router, prefix="/api/v1", tags=["config"])
+    app.include_router(sportsbooks.router, prefix="/api/v1", tags=["sportsbooks"])
 
     return app
 

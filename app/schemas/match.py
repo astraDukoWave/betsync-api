@@ -1,27 +1,29 @@
-from pydantic import BaseModel
-from typing import Optional
 from datetime import datetime
+from typing import Optional
+from uuid import UUID
+
+from pydantic import BaseModel, ConfigDict
+
 from app.models.match import MatchStatus
 
 
-class MatchBase(BaseModel):
-    external_id: Optional[str] = None
+class MatchCreate(BaseModel):
+    competition_id: UUID
     home_team: str
     away_team: str
-    match_date: datetime
-    status: MatchStatus = MatchStatus.scheduled
+    kickoff_at: datetime
+
+
+class MatchResponse(BaseModel):
+    match_id: UUID
+    competition_id: UUID
+    home_team: str
+    away_team: str
+    kickoff_at: datetime
+    status: MatchStatus
     home_score: Optional[int] = None
     away_score: Optional[int] = None
-    competition_id: int
-
-
-class MatchCreate(MatchBase):
-    pass
-
-
-class MatchRead(MatchBase):
-    id: int
     created_at: datetime
-    updated_at: Optional[datetime] = None
+    updated_at: datetime
 
-    model_config = {"from_attributes": True}
+    model_config = ConfigDict(from_attributes=True)

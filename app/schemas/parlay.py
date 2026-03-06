@@ -1,38 +1,49 @@
-from pydantic import BaseModel
-from typing import Optional, List
+from datetime import date, datetime
 from decimal import Decimal
-from datetime import datetime
-from app.models.parlay import ParlayStatus
+from typing import Optional
+from uuid import UUID
+
+from pydantic import BaseModel, ConfigDict, Field
+
+from app.models.parlay import ParlayStatus, ParlayType
+from app.models.pick import PickStatus
 
 
-class ParlayPickRead(BaseModel):
-    id: int
-    parlay_id: int
-    pick_id: int
-    position: int
+class ParlayCreate(BaseModel):
+    sportsbook_id: UUID
+    pick_ids: list[UUID] = Field(min_length=2, max_length=8)
+    stake: Decimal
+    type: ParlayType = ParlayType.regular
+
+
+class ParlayPickDetail(BaseModel):
+    pick_id: UUID
+    market: str
+    selection: str
+    odds_decimal: Decimal
+    status: PickStatus
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class ParlayResponse(BaseModel):
+    parlay_id: UUID
+    sportsbook_id: UUID
+    run_date: date
+    type: ParlayType
+    stake: Decimal
+    odds_total: Decimal
+    potential_return: Decimal
+    actual_return: Optional[Decimal] = None
+    status: ParlayStatus
+    picks: list[ParlayPickDetail] = []
     created_at: datetime
+    updated_at: datetime
 
-    model_config = {"from_attributes": True}
+    model_config = ConfigDict(from_attributes=True)
 
-
-class ParlayBase(BaseModel):
-    name: Optional[str] = None
-    stake: Decimal = Decimal("75.00")
-    total_odds: Optional[Decimal] = None
-    potential_payout: Optional[Decimal] = None
-    actual_payout: Optional[Decimal] = None
-    status: ParlayStatus = ParlayStatus.open
-    notes: Optional[str] = None
-
-
-class ParlayCreate(ParlayBase):
-    pick_ids: List[int] = []
-
-
-class ParlayRead(ParlayBase):
-    id: int
-    created_at: datetime
-    updated_at: Optional[datetime] = None
-    parlay_picks: List[ParlayPickRead] = []
-
-    model_config = {"from_attributes": True}
+    @property
+    def profit_loss(self) -> Optional[Decimal]:
+        if self.actual_return is not None:
+            return self.actual_return - self.stake
+        return None

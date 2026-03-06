@@ -1,13 +1,22 @@
-from sqlalchemy import Column, Integer, String, ForeignKey, DateTime, Enum as SAEnum
-from sqlalchemy.orm import relationship
-from datetime import datetime
 import enum
+import uuid
+from datetime import datetime
+from typing import TYPE_CHECKING, List, Optional
+
+from sqlalchemy import String, Integer, DateTime, ForeignKey, func
+from sqlalchemy import Enum as SAEnum
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+
 from app.core.database import Base
+
+if TYPE_CHECKING:
+    from app.models.competition import Competition
+    from app.models.pick import Pick
 
 
 class MatchStatus(str, enum.Enum):
     scheduled = "scheduled"
-    live = "live"
+    in_progress = "in_progress"
     finished = "finished"
     postponed = "postponed"
     cancelled = "cancelled"
@@ -16,24 +25,24 @@ class MatchStatus(str, enum.Enum):
 class Match(Base):
     __tablename__ = "matches"
 
-    id = Column(Integer, primary_key=True, index=True)
-    external_id = Column(String(100), unique=True, nullable=True)
-    home_team = Column(String(200), nullable=False)
-    away_team = Column(String(200), nullable=False)
-    match_date = Column(DateTime, nullable=False)
-    status = Column(SAEnum(MatchStatus), default=MatchStatus.scheduled)
-    home_score = Column(Integer, nullable=True)
-    away_score = Column(Integer, nullable=True)
-    created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    match_id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    competition_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("competitions.competition_id"), nullable=False
+    )
+    home_team: Mapped[str] = mapped_column(String(200), nullable=False)
+    away_team: Mapped[str] = mapped_column(String(200), nullable=False)
+    kickoff_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    status: Mapped[MatchStatus] = mapped_column(
+        SAEnum(MatchStatus, name="match_status"), default=MatchStatus.scheduled
+    )
+    home_score: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    away_score: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
 
-    # FK
-    competition_id = Column(Integer, ForeignKey("competitions.id"), nullable=False)
-
-    # Relationships
-    competition = relationship("Competition", back_populates="matches")
-    odds = relationship("Odd", back_populates="match", cascade="all, delete-orphan")
-    picks = relationship("Pick", back_populates="match", cascade="all, delete-orphan")
-
-    def __repr__(self):
-        return f"<Match id={self.id} {self.home_team} vs {self.away_team} {self.match_date}>"
+    competition: Mapped["Competition"] = relationship(back_populates="matches")
+    picks: Mapped[List["Pick"]] = relationship(back_populates="match")

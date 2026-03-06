@@ -1,21 +1,20 @@
-from pydantic import BaseModel
-from typing import Optional
 from datetime import datetime
+from uuid import UUID
+
+from pydantic import BaseModel, ConfigDict
 
 
-class SportBase(BaseModel):
+class SportCreate(BaseModel):
     name: str
     slug: str
     is_active: bool = True
 
 
-class SportCreate(SportBase):
-    pass
-
-
-class SportRead(SportBase):
-    id: int
+class SportResponse(BaseModel):
+    sport_id: UUID
+    name: str
+    slug: str
+    is_active: bool
     created_at: datetime
-    updated_at: Optional[datetime] = None
 
-    model_config = {"from_attributes": True}
+    model_config = ConfigDict(from_attributes=True)

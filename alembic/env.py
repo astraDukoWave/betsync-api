@@ -1,18 +1,23 @@
 """Alembic environment configuration for async SQLAlchemy migrations."""
+import os
 from logging.config import fileConfig
+
+import asyncio
 from sqlalchemy import pool
 from sqlalchemy.ext.asyncio import async_engine_from_config
 from alembic import context
-import asyncio
 
-# Import all models so autogenerate can detect changes
 from app.core.database import Base  # noqa: F401
 from app.models import (  # noqa: F401
-    competition, match, odd, parlay, parlay_pick,
-    pick, sport, sportsbook, config as config_model
+    Sport, Competition, Match, Sportsbook,
+    Pick, Parlay, ParlayPick, SystemConfig,
 )
 
 config = context.config
+
+database_url = os.environ.get("DATABASE_URL")
+if database_url:
+    config.set_main_option("sqlalchemy.url", database_url)
 
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
@@ -21,7 +26,6 @@ target_metadata = Base.metadata
 
 
 def run_migrations_offline() -> None:
-    """Run migrations in offline mode."""
     url = config.get_main_option("sqlalchemy.url")
     context.configure(
         url=url,
@@ -45,7 +49,6 @@ def do_run_migrations(connection):
 
 
 async def run_async_migrations() -> None:
-    """Run migrations using async engine."""
     connectable = async_engine_from_config(
         config.get_section(config.config_ini_section, {}),
         prefix="sqlalchemy.",
@@ -57,7 +60,6 @@ async def run_async_migrations() -> None:
 
 
 def run_migrations_online() -> None:
-    """Run migrations in online mode."""
     asyncio.run(run_async_migrations())
 
 
