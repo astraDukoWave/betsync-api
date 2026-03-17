@@ -76,7 +76,7 @@ async def _aggregate_picks(
     # --- Picks WON ---
     won_stmt = select(
         func.coalesce(
-            func.sum(Pick.stake * Pick.odds_decimal), ZERO
+            func.sum((Pick.stake * Pick.odds_decimal) - Pick.stake), ZERO
         ).label("gross_winnings"),
         func.count(Pick.pick_id).label("count_won"),
     ).where(
@@ -170,9 +170,8 @@ async def get_fiscal_summary(
 ) -> FiscalSummaryResponse:
     """Calcula el resumen fiscal completo para el año indicado.
 
-    Cruza los dominios Pick y Transaction para obtener:
-      - Ganancias brutas de picks ganados (stake * odds_decimal)
-      - Pérdidas brutas de picks perdidos (stake)
+            - Profit neto de picks ganados (stake * odds_decimal - stake)
+            - Pérdidas brutas de picks perdidos (stake)
       - Ingreso neto de apuestas
       - Total de depósitos y bonos (entradas de cash)
       - Total de retiros (salidas de cash)
@@ -294,8 +293,8 @@ async def get_fiscal_detail_rows(
         )
 
         if pick.status == PickStatus.won:
-            credit = (stake * odds).quantize(Decimal("0.01"))
-            debit = ZERO
+            credit = (stake * odds).quantize(Decimal("0.01")) # Retorno total
+                        debit = stake.quantize(Decimal("0.01"))           # Lo que costó la apuesta
         elif pick.status == PickStatus.lost:
             credit = ZERO
             debit = stake.quantize(Decimal("0.01"))
