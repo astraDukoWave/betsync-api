@@ -6,6 +6,7 @@ from app.models.pick import Pick, PickStatus, PickGrade, PickSource
 from app.models.parlay import Parlay, ParlayStatus, ParlayType
 from app.models.parlay_pick import ParlayPick
 from app.models.config import SystemConfig
+from app.models.transaction import Transaction, TransactionType, TransactionCurrency
 
 __all__ = [
     "Sport",
@@ -22,4 +23,7 @@ __all__ = [
     "ParlayType",
     "ParlayPick",
     "SystemConfig",
+    "Transaction",
+    "TransactionType",
+    "TransactionCurrency",
 ]
