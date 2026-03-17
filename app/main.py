@@ -6,7 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.core.database import engine
 from app.core.dependencies import close_redis
 from app.core.exception_handlers import register_exception_handlers
-from app.routers import picks, parlays, dashboard, pipeline, config, health, sportsbooks
+from app.routers import picks, parlays, dashboard, pipeline, config, health, sportsbooks, transactions
 
 
 @asynccontextmanager
@@ -23,7 +23,6 @@ def create_app() -> FastAPI:
         version="1.0.0",
         lifespan=lifespan,
     )
-
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["*"],
@@ -31,9 +30,7 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
-
     register_exception_handlers(app)
-
     app.include_router(health.router, tags=["health"])
     app.include_router(picks.router, prefix="/api/v1", tags=["picks"])
     app.include_router(parlays.router, prefix="/api/v1", tags=["parlays"])
@@ -41,7 +38,7 @@ def create_app() -> FastAPI:
     app.include_router(pipeline.router, prefix="/api/v1", tags=["pipeline"])
     app.include_router(config.router, prefix="/api/v1", tags=["config"])
     app.include_router(sportsbooks.router, prefix="/api/v1", tags=["sportsbooks"])
-
+    app.include_router(transactions.router, prefix="/api/v1", tags=["transactions"])
     return app
 
 
