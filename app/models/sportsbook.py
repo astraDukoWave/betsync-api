@@ -10,6 +10,7 @@ from app.core.database import Base
 if TYPE_CHECKING:
     from app.models.pick import Pick
     from app.models.parlay import Parlay
+        from app.models.transaction import Transaction
 
 
 class Sportsbook(Base):
@@ -26,3 +27,4 @@ class Sportsbook(Base):
 
     picks: Mapped[List["Pick"]] = relationship(back_populates="sportsbook")
     parlays: Mapped[List["Parlay"]] = relationship(back_populates="sportsbook")
+    transactions: Mapped[List["Transaction"]] = relationship(back_populates="sportsbook")
