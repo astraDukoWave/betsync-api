@@ -96,21 +96,21 @@ async def seed():
         print(f"✅ Picks inyectados y resueltos.")
         
         # 4. Cálculo de valores esperados (manual en el script para comparar)
-        # Winnings: (100*3.0) + (220*1.909) + (50*2.0) + (10*6.0)  <- Odds decimal
-        # Winnings aproximados: 300 + 420 + 100 + 60 = 880
-        # Losses: 100 + 200 = 300
-        # Net Gambling: 580
-        # Deposits: 1000 + 200 + (100*20) = 3200
-        # Withdrawals: 500
-        
+            # Gross Winnings (PROFIT = stake*odds - stake):
+    #   Pick1: 100*(3.0-1)=200 | Pick2: 220*(1.909-1)=~200 | Pick3: 50*(2.0-1)=50 | Pick7: 10*(6.0-1)=50
+    # Gross Winnings (profit total): ~200 + 200 + 50 + 50 = ~500
+    # Gross Losses: 100 + 200 = 300
+        # Net Gambling Income (Taxable Base): ~500 - 300 = ~200
+    # Deposits: 1000 + 200 + (100*20) = 3200
+    # Withdrawals: 500
         print("\n" + "="*40)
         print("📊 VALIDACIÓN — VALORES ESPERADOS (APROX)")
         print("="*40)
-        print(f"Gross Winnings: ~$480 (stake*odds_dec - depende de la conversión interna)")
+                print(f"Gross Winnings (profit): ~$500.00")
         print(f"Gross Losses:   $300.00")
         print(f"Total Deposits: $3,200.00")
         print(f"Total Withdraw: $500.00")
-        print(f"Taxable Base:   ~$180.00")
+                print(f"Taxable Base:   ~$200.00")
         print("="*40)
         print(f"\n👉 Ejecuta ahora en Swagger:")
         print(f"GET {BASE_URL}/fiscal/summary?tax_year={TAX_YEAR}")
