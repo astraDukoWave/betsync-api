@@ -10,7 +10,7 @@ from app.core.database import Base
 if TYPE_CHECKING:
     from app.models.pick import Pick
     from app.models.parlay import Parlay
-        from app.models.transaction import Transaction
+    from app.models.transaction import Transaction
 
 
 class Sportsbook(Base):
