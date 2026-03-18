@@ -294,7 +294,7 @@ async def get_fiscal_detail_rows(
 
         if pick.status == PickStatus.won:
             credit = (stake * odds).quantize(Decimal("0.01")) # Retorno total
-                        debit = stake.quantize(Decimal("0.01"))           # Lo que costó la apuesta
+            debit = stake.quantize(Decimal("0.01"))           # Lo que costó la apuesta
         elif pick.status == PickStatus.lost:
             credit = ZERO
             debit = stake.quantize(Decimal("0.01"))
