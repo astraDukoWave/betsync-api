@@ -4,7 +4,7 @@ from decimal import Decimal
 from typing import Optional
 from uuid import UUID
 
-from sqlalchemy import select, func
+from sqlalchemy import event, select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -17,6 +17,32 @@ from app.worker.pipeline.calculator import american_to_decimal, calc_implied_pro
 logger = logging.getLogger(__name__)
 
 GRADE_THRESHOLDS = {"A": 0.55, "B": 0.50}
+
+_AGG_RECOMPUTE_DATES_KEY = "agg_recompute_dates"
+_AGG_RECOMPUTE_LISTENER_KEY = "_agg_recompute_listener_registered"
+
+
+def _queue_aggregate_recompute_on_commit(db: AsyncSession, run_date: date) -> None:
+    """Schedule agg recompute after successful transaction commit (see get_db)."""
+    sync = db.sync_session
+    if _AGG_RECOMPUTE_DATES_KEY not in sync.info:
+        sync.info[_AGG_RECOMPUTE_DATES_KEY] = set()
+    sync.info[_AGG_RECOMPUTE_DATES_KEY].add(run_date)
+
+    if sync.info.get(_AGG_RECOMPUTE_LISTENER_KEY):
+        return
+    sync.info[_AGG_RECOMPUTE_LISTENER_KEY] = True
+
+    def on_after_commit(sess):
+        dates = sess.info.pop(_AGG_RECOMPUTE_DATES_KEY, set())
+        sess.info.pop(_AGG_RECOMPUTE_LISTENER_KEY, None)
+        event.remove(sync, "after_commit", on_after_commit)
+        from app.worker.tasks import enqueue_recompute_aggregates_for_day
+
+        for d in sorted(dates, key=lambda x: x.isoformat()):
+            enqueue_recompute_aggregates_for_day(d)
+
+    event.listen(sync, "after_commit", on_after_commit)
 
 
 def _settlement_for_status(
@@ -69,6 +95,7 @@ async def create_pick(db: AsyncSession, data: PickCreate) -> Pick:
     db.add(pick)
     await db.flush()
     await db.refresh(pick)
+    _queue_aggregate_recompute_on_commit(db, pick.run_date)
     logger.info("Pick created: %s | %s @ %s", pick.pick_id, data.selection, odds_dec)
     return pick
 
@@ -143,6 +170,7 @@ async def update_pick(db: AsyncSession, pick_id: UUID, data: PickUpdate) -> Pick
 
     await db.flush()
     await db.refresh(pick)
+    _queue_aggregate_recompute_on_commit(db, pick.run_date)
     return pick
 
 
@@ -169,6 +197,7 @@ async def resolve_pick(db: AsyncSession, pick_id: UUID, data: PickResolve) -> Pi
 
     await db.flush()
     await db.refresh(pick)
+    _queue_aggregate_recompute_on_commit(db, pick.run_date)
     logger.info("Pick resolved: %s → %s", pick_id, data.status.value)
     return pick
 
@@ -194,6 +223,7 @@ async def delete_pick(db: AsyncSession, pick_id: UUID) -> Pick:
     pick.status = PickStatus.void
     await db.flush()
     await db.refresh(pick)
+    _queue_aggregate_recompute_on_commit(db, pick.run_date)
     return pick
 
 

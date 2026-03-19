@@ -1,19 +1,75 @@
 import hashlib
 import json
 import logging
+import random
 from datetime import date
 from decimal import Decimal
 from typing import Optional
 from uuid import UUID
 
-from sqlalchemy import select, func, case, desc
+from sqlalchemy import select, func, case, desc, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.models.aggregates import AggPickDaily
 from app.models.pick import Pick, PickStatus
 from app.schemas.dashboard import DashboardSummary, StreakInfo, SegmentResponse
 from app.services.cache_service import get_cache, set_cache
 
 logger = logging.getLogger(__name__)
+
+
+_RAW_DAY_PROFIT_SQL = """
+    COALESCE(SUM(
+        CASE
+            WHEN profit IS NOT NULL THEN profit
+            WHEN status::text = 'void' OR status::text = 'pending' THEN 0::numeric
+            WHEN stake IS NULL THEN 0::numeric
+            WHEN status::text = 'won' THEN stake * odds_decimal - stake
+            WHEN status::text = 'lost' THEN -stake
+            WHEN status::text = 'push' THEN 0::numeric
+            ELSE 0::numeric
+        END
+    ), 0)
+"""
+
+
+async def _maybe_log_agg_pick_daily_mismatch(
+    db: AsyncSession,
+    day: date,
+) -> None:
+    """Sampled validation: compare unfiltered single-day raw rollups vs agg_pick_daily."""
+    raw_stmt = text(
+        f"SELECT COUNT(*)::int AS cnt, {_RAW_DAY_PROFIT_SQL} AS profit_sum "
+        "FROM picks WHERE run_date = :day"
+    )
+    row = (await db.execute(raw_stmt, {"day": day})).one()
+    raw_cnt = int(row.cnt)
+    raw_profit = row.profit_sum if row.profit_sum is not None else Decimal("0")
+    if not isinstance(raw_profit, Decimal):
+        raw_profit = Decimal(str(raw_profit))
+
+    agg_row = await db.get(AggPickDaily, day)
+    agg_cnt = int(agg_row.pick_count) if agg_row else 0
+    if agg_row is not None and agg_row.total_profit is not None:
+        agg_profit = agg_row.total_profit
+    else:
+        agg_profit = Decimal("0")
+    if not isinstance(agg_profit, Decimal):
+        agg_profit = Decimal(str(agg_profit))
+
+    profit_delta = raw_profit - agg_profit
+    count_delta = raw_cnt - agg_cnt
+    if abs(profit_delta) > Decimal("0.01") or count_delta != 0:
+        logger.warning(
+            "[DUAL_READ_MISMATCH] day:%s raw:%s agg:%s delta:%s",
+            day.isoformat(),
+            {"pick_count": raw_cnt, "total_profit": str(raw_profit)},
+            {"pick_count": agg_cnt, "total_profit": str(agg_profit)},
+            {
+                "pick_count": count_delta,
+                "total_profit": str(profit_delta),
+            },
+        )
 
 
 def _build_cache_key(params: dict) -> str:
@@ -45,6 +101,8 @@ async def get_summary(
     cached = await get_cache(redis, cache_key)
     if cached:
         return DashboardSummary(cache_hit=True, **cached)
+
+    sample_dual_read = random.random() < 0.1
 
     base = select(Pick)
     if date_from:
@@ -100,6 +158,16 @@ async def get_summary(
         "avg_odds_decimal": float(avg_odds),
         "avg_clv": float(avg_clv) if avg_clv is not None else None,
     }
+
+    if sample_dual_read:
+        if (
+            date_from is not None
+            and date_to is not None
+            and date_from == date_to
+            and market is None
+            and grade is None
+        ):
+            await _maybe_log_agg_pick_daily_mismatch(db, date_from)
 
     await set_cache(redis, cache_key, data, ttl=cache_ttl)
     return DashboardSummary(cache_hit=False, **data)
