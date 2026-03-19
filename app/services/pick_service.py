@@ -19,6 +19,26 @@ logger = logging.getLogger(__name__)
 GRADE_THRESHOLDS = {"A": 0.55, "B": 0.50}
 
 
+def _settlement_for_status(
+    status: PickStatus,
+    stake: Optional[Decimal],
+    odds_decimal: Decimal,
+) -> tuple[Optional[Decimal], Optional[Decimal]]:
+    """Return (settled_return, profit) for a resolved status."""
+    if stake is None:
+        return None, None
+    if status == PickStatus.won:
+        gross = stake * odds_decimal
+        return gross, gross - stake
+    if status == PickStatus.lost:
+        return Decimal("0"), -stake
+    if status == PickStatus.push:
+        return stake, Decimal("0")
+    if status == PickStatus.void:
+        return None, None
+    return None, None
+
+
 def classify_grade(implied_prob: float) -> PickGrade:
     if implied_prob >= GRADE_THRESHOLDS["A"]:
         return PickGrade.A
@@ -137,6 +157,9 @@ async def resolve_pick(db: AsyncSession, pick_id: UUID, data: PickResolve) -> Pi
 
     pick.status = data.status
     pick.resolved_at = datetime.utcnow()
+    pick.settled_return, pick.profit = _settlement_for_status(
+        data.status, pick.stake, pick.odds_decimal
+    )
 
     if data.closing_odds_decimal is not None:
         pick.closing_odds_decimal = data.closing_odds_decimal
