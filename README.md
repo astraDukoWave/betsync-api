@@ -286,7 +286,8 @@ betsync-api/
 │   ├── test_calculator.py         22 pure unit tests
 │   └── test_pipeline.py           Predictor tests
 ├── docs/
-│   └── api_edge_cases.md          Edge case documentation
+│   ├── api_edge_cases.md          Edge case documentation
+│   └── ai_agent_rules.md         Enforceable AI-agent rules for Pick-centric, DB-safe changes
 ├── docker-compose.yml             4 services: postgres, redis, api, worker
 ├── Dockerfile                     Multi-stage: api + worker targets
 ├── alembic.ini
