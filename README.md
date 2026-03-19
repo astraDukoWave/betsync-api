@@ -120,6 +120,10 @@ docker compose exec api alembic upgrade head
 
 ---
 
+## Additional documentation
+
+- `docs/scaling_strategy.md` — phased scaling plan for 0-100k users, including DB, caching, and async pipeline recommendations.
+
 ## API Endpoints
 
 All endpoints are prefixed with `/api/v1` except `/health`.
