@@ -48,6 +48,7 @@ async def create_pick(db: AsyncSession, data: PickCreate) -> Pick:
     )
     db.add(pick)
     await db.flush()
+    await db.refresh(pick)
     logger.info("Pick created: %s | %s @ %s", pick.pick_id, data.selection, odds_dec)
     return pick
 
@@ -121,6 +122,7 @@ async def update_pick(db: AsyncSession, pick_id: UUID, data: PickUpdate) -> Pick
             setattr(pick, field, value)
 
     await db.flush()
+    await db.refresh(pick)
     return pick
 
 
@@ -143,6 +145,7 @@ async def resolve_pick(db: AsyncSession, pick_id: UUID, data: PickResolve) -> Pi
         )
 
     await db.flush()
+    await db.refresh(pick)
     logger.info("Pick resolved: %s → %s", pick_id, data.status.value)
     return pick
 
@@ -167,6 +170,7 @@ async def delete_pick(db: AsyncSession, pick_id: UUID) -> Pick:
 
     pick.status = PickStatus.void
     await db.flush()
+    await db.refresh(pick)
     return pick
 
 
@@ -184,4 +188,5 @@ async def confirm_pick(db: AsyncSession, pick_id: UUID, data: PickConfirm) -> Pi
         pick.status = PickStatus.void
 
     await db.flush()
+    await db.refresh(pick)
     return pick
