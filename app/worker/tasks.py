@@ -19,7 +19,10 @@ def enqueue_recompute_aggregates_for_day(run_date: date) -> None:
     key = f"{AGG_LOCK_PREFIX}{run_date.isoformat()}"
     if r.exists(key):
         return
-    recompute_aggregates_for_day.delay(run_date.isoformat())
+    recompute_aggregates_for_day.apply_async(
+        kwargs={"run_date_iso": run_date.isoformat()},
+        countdown=2,
+    )
 
 
 @celery_app.task(
