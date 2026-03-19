@@ -8,6 +8,50 @@ These rules are mandatory for any AI agent or human using AI assistance to chang
 
 ---
 
+## 0. Architectural Enforcement (DECISION-001)
+
+These rules are non-negotiable. They override any other rule in this document in case of conflict. They derive from [DECISION-001: Aggregation Strategy (LOCKED)](scaling_strategy.md#decision-001-aggregation-strategy-locked).
+
+### Golden Rule
+
+> **PROHIBITED: Aggregate queries (`SUM`, `COUNT`, `AVG`, `GROUP BY`, window functions, or any multi-row scan for the purpose of computing a derived metric) on the `picks` table in the synchronous request path.**
+
+This means:
+- No endpoint handler, service method, or any code invoked during an HTTP request/response cycle may execute an aggregate query against `picks`.
+- Dashboard data, fiscal summaries, ROI calculations, streak computations, and any other derived metric MUST be read from `agg_*` tables.
+- A cache miss on a Dashboard or fiscal endpoint MUST fall through to an `agg_*` table read. It MUST NOT fall through to a live aggregate on `picks`.
+- This applies to all environments: development, staging, and production. "It's only dev" is not an exemption.
+
+**Violation of the Golden Rule is grounds for immediate PR rejection. No exceptions. No "temporary" workarounds.**
+
+### Metric Obligation
+
+> **Every new metric MUST be backed by a corresponding `agg_*` table column, a dedicated `agg_*` table, or an explicitly defined asynchronous compute path (Celery task, pipeline stage, scheduled job).**
+
+A PR that introduces a new metric — whether exposed via API, displayed on the Dashboard, or used in fiscal reporting — MUST include or reference:
+
+1. The `agg_*` table and column where the precomputed value is stored, OR
+2. The Celery task / pipeline stage / scheduled job that computes it asynchronously, AND
+3. The staleness SLA (maximum acceptable age of the computed value).
+
+**A PR that introduces a metric without defining its aggregation backing will be REJECTED. The metric does not exist until its async compute path exists.**
+
+### Enforcement Penalty
+
+The following patterns trigger **immediate PR closure** — not rejection with requested changes, but closure:
+
+| Pattern | Penalty |
+|---|---|
+| Use of Redis `KEYS` command anywhere in application code | **Immediate PR closure** |
+| Aggregate query (`SUM`, `COUNT`, `AVG`, `GROUP BY`) on `picks` in any code reachable from an HTTP handler | **Immediate PR closure** |
+| `REFRESH MATERIALIZED VIEW` in any code reachable from an HTTP handler | **Immediate PR closure** |
+| New metric endpoint without a defined `agg_*` backing or async compute path | **Immediate PR closure** |
+| Argument that a prohibited pattern is acceptable because it is "temporary", "behind a flag", or "only for one endpoint" | **Immediate PR closure** |
+
+These penalties exist because the prohibited patterns have compounding costs that are disproportionate to the apparent simplicity of the violation. There is no safe way to do them "just once."
+
+---
+
 ## 1. DB rules
 
 ### Rule 1.1

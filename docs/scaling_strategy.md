@@ -1,163 +1,180 @@
-# Scaling Strategy
+# BetSync Scaling Strategy
 
-This document proposes a phased scaling plan for BetSync API based on the current monolith architecture: FastAPI for synchronous request handling, PostgreSQL for system-of-record writes, Redis for both cache and Celery transport, and a single Celery worker for the async betting pipeline.[^current-arch]
+> **Status:** LOCKED — Changes require Principal Architect sign-off and RFC process.
+> **Last updated:** 2026-03-19
 
-## Current bottlenecks identified
+---
 
-1. **Dashboard reads become expensive as pick volume grows.**
-   `dashboard_service.get_summary()` issues multiple aggregate queries (`count`, status counts, sums, averages, streak lookup) per cache miss, so a single uncached dashboard request fans out into several database round trips.[^dashboard]
-2. **Cache invalidation is O(N) and uses Redis `KEYS`.**
-   Every pick create/update invalidates dashboard cache by scanning `dashboard:summary:*`, which is acceptable at low scale but becomes a blocking Redis anti-pattern with a large keyspace.[^cache]
-3. **The async pipeline is serialized behind one queue/worker shape and stores transient status in Redis only.**
-   Pipeline runs are enqueued onto a single `pipeline` queue, with job state saved as Redis keys that expire after 24 hours.[^pipeline-router][^worker]
-4. **Pipeline writes are row-by-row and re-query shared reference data.**
-   The runner inserts picks and parlays in loops and repeatedly resolves defaults, which will amplify write bursts as more matches and sportsbook data are processed per run.[^runner]
-5. **External odds ingestion depends on one upstream API with request/retry overhead inside each job.**
-   The pipeline performs synchronous HTTP calls with retries against The Odds API, so upstream rate limits or latency directly elongate job runtime and backlog growth.[^odds]
-6. **The database topology is single-primary only.**
-   The app uses one PostgreSQL instance with a moderate async pool and one sync engine for workers; there are no read replicas, partitioning, or workload isolation mechanisms yet.[^db]
-7. **Redis currently carries three responsibilities.**
-   Redis is used for API caching, Celery broker, and Celery result/job state, so cache churn and queue pressure can compete for the same infrastructure footprint.[^compose]
+## DECISION-001: Aggregation Strategy (LOCKED)
 
-These bottlenecks can be addressed while staying monolithic through all three phases; microservices are unnecessary unless organizational boundaries or independently scaled product domains emerge later.
+### Statement
 
-## Phase 1 (0–1k users)
+All Dashboard endpoints and all fiscal/analytics endpoints SHALL read exclusively from **aggregation tables** (`agg_*`) maintained asynchronously by background workers.
 
-### Architecture changes
-- Keep the **modular monolith**: one FastAPI deployment plus one Celery worker deployment.
-- Run the API behind a load balancer with **2–3 stateless API instances** to absorb read-heavy traffic spikes.
-- Separate runtime concerns operationally, not architecturally:
-  - API pods/containers for synchronous requests.
-  - Worker pods/containers for pipeline jobs.
-  - Managed PostgreSQL and managed Redis if possible.
-- Add **basic observability** now: request latency, cache hit rate, DB query timings, queue depth, pipeline duration, odds API latency, and 429/5xx upstream error rates.
-- Introduce **rate limiting and concurrency caps** on `POST /pipeline/run` so manual retries cannot create bursty background load beyond the current idempotency guard.
+Direct aggregate queries (`SUM`, `COUNT`, `AVG`, `GROUP BY`, window functions, or any scan that touches more than a single row by primary key) against the `picks` table — or any other transactional table — in the synchronous request path are **PROHIBITED**.
 
-### DB strategy
-- Stay on a **single PostgreSQL primary**.
-- Add or verify indexes for the hottest filters and ordering paths used by dashboard and pick listing queries, especially on:
-  - `picks(run_date)`
-  - `picks(status, resolved_at)`
-  - `picks(source, status)`
-  - `picks(match_id)`
-  - optional composite indexes for the most common dashboard filters.
-- Replace repeated live aggregates for common dashboards with a **small summary table or materialized view** refreshed by the pipeline and pick result updates. This is the biggest DB win in the first phase because it removes the many-query fan-out on cache misses.
-- Tune connection pools conservatively; the app pool is already fixed-size, so keep API and worker concurrency aligned with database capacity rather than simply increasing worker count.[^db]
+### Rationale
 
-### Caching strategy
-- Keep **Redis cache-aside**, but change invalidation from global `KEYS` deletion to **versioned namespaces** or **targeted key registries** so writes remain O(1) or O(log N) instead of scanning all dashboard keys.[^cache]
-- Cache the most requested dashboard payloads and config lookups.
-- Use **stale-while-revalidate semantics** for read-heavy dashboard endpoints: serve slightly stale summaries for a short window while asynchronously refreshing them.
-- Split Redis logically at minimum by deployment role:
-  - cache Redis/database
-  - queue/result Redis/database
-  This avoids queue traffic evicting hot cache entries.
+The `picks` table is the write-hot center of the domain. Aggregate reads against it in the request path create lock contention, unpredictable latency, and a coupling between user-facing SLAs and table growth. This decision eliminates that coupling permanently.
 
-### Async processing changes
-- Keep Celery and a **single queue**, but run **multiple worker processes** for headroom if jobs are independent.
-- Persist job metadata in PostgreSQL for audit/history if job visibility longer than 24h matters; Redis can remain the fast status cache.[^pipeline-router][^worker]
-- Add **upstream request budget controls**:
-  - one in-flight odds sync per sport/date
-  - exponential backoff with jitter
-  - circuit breaker/degraded mode when the odds provider is unhealthy.
-- Precompute and store reusable upstream payload snapshots per run so retries or forced reruns do not repeatedly hit the external API when source data has not changed.
+### Scope
 
-## Phase 2 (1k–10k users)
+| Path | Allowed Source | Prohibited Source |
+|---|---|---|
+| `GET /dashboard/*` | `agg_dashboard_summary`, `agg_daily_performance`, `agg_streak` | Any live query on `picks` |
+| `GET /fiscal/*`, `GET /analytics/*` | `agg_fiscal_*`, `agg_roi_*` | Any live query on `picks` |
+| `GET /picks` (list, detail) | `picks` table directly (bounded, paginated) | Aggregate subqueries or inline stats |
+| Pipeline / Celery tasks | `picks` (for row-level insert/update) | N/A — workers own the write path |
+| Aggregation workers | `picks` (read for computation) → write to `agg_*` | N/A — this IS the async compute path |
 
-### Architecture changes
-- Continue with the monolith, but scale it into **independently deployable workloads**:
-  - horizontally scaled API deployment
-  - dedicated worker deployment for pipeline jobs
-  - optional dedicated beat/scheduler process if recurring runs are added.
-- Put the API behind an **ingress/load balancer + autoscaling** based on CPU and latency.
-- Add **read/write workload isolation inside the monolith**:
-  - API reads preferentially use replicas for safe endpoints.
-  - writes and transactional updates stay on primary.
-- Introduce a **workflow coordinator inside the monolith** for pipeline steps if needed, but do not break out services yet.
+### Constraints
 
-### DB strategy
-- Add at least **one PostgreSQL read replica** for dashboard, config, and suggestions reads.
-- Move from raw live aggregations toward **incremental rollups**:
-  - daily pick performance table
-  - per-sport/per-market aggregates
-  - current streak snapshot
-- Partition high-growth tables such as `picks` by `run_date` or month once row counts justify it, mainly to keep vacuum/index maintenance predictable and historical scans cheaper.
-- Use **bulk inserts/upserts** in the pipeline instead of ORM row-by-row adds for picks and parlays.[^runner]
-- Add query observability (`pg_stat_statements`, slow-query thresholds) and capacity SLOs for primary vs replica lag.
+1. **Materialized Views are PROHIBITED on the critical path.** They are not used for Dashboard reads, fiscal reads, or any endpoint that serves user-facing traffic. Materialized Views cannot be refreshed transactionally, their refresh timing is opaque to the application, and they create invisible coupling between read latency and refresh scheduling. Use explicit `agg_*` tables with application-controlled write logic instead.
 
-### Caching strategy
-- Move to a **two-layer cache** for hottest reads:
-  - short in-process cache for ultra-hot config/reference reads
-  - Redis for cross-instance shared dashboards and suggestion lists.
-- Pre-warm common dashboard keys after pipeline completion or major write bursts.
-- Add **negative caching** or short-TTL empty-result caching for endpoints frequently queried before data lands.
-- Enforce cache key cardinality controls for heavily filtered dashboard requests; not every arbitrary filter combination should be cached indefinitely.
+2. **Every `agg_*` table MUST have a defined update trigger.** Acceptable triggers: Celery task on pick mutation, pipeline completion signal, scheduled periodic recomputation. Unacceptable: manual refresh, ad-hoc scripts, `REFRESH MATERIALIZED VIEW`.
 
-### Async processing changes
-- Split Celery workloads into **at least two queues** inside the monolith:
-  - `pipeline-ingest` for external odds fetch/snapshot
-  - `pipeline-compute` for scoring, pick generation, and parlay generation.
-  This is justified because upstream I/O latency and internal compute have different scaling characteristics, but it does not require microservices.
-- Add **job deduplication by natural key** (`sport + run_date + market scope`) rather than only by a per-day Redis flag, so forced reruns can still avoid redundant sub-steps.
-- Save raw odds snapshots in PostgreSQL/object storage for replay, debugging, and reprocessing without re-calling the provider.
-- Introduce **dead-letter handling** for repeated upstream failures and alerts on backlog age, retry count, and time-to-completion.
+3. **Every `agg_*` table MUST define a staleness SLA.** The maximum acceptable age of the aggregated data must be documented in the table's Alembic migration docstring and enforced by monitoring. Example: `agg_dashboard_summary` staleness SLA = 60 seconds.
 
-## Phase 3 (10k–100k users)
+4. **Cache layers read from `agg_*`, never from `picks`.** Redis cache-aside for Dashboard endpoints must be backed by `agg_*` reads. A cache miss must hit `agg_*`, never fall through to a live aggregate on `picks`.
 
-### Architecture changes
-- Keep the product as a monolith unless one of these becomes true:
-  1. the pipeline must scale on a drastically different reliability envelope than the API,
-  2. a separate team owns ingestion/analytics independently,
-  3. external partner integrations create isolated compliance or blast-radius needs.
-- The recommended shape at this stage is still a **scaled monolith with separated runtime planes**:
-  - API plane for user reads/writes
-  - worker plane for async processing
-  - analytics/rollup plane for scheduled data prep.
-- Add **regional edge caching/CDN** only for safe GET endpoints if user geography broadens.
-- Use **autoscaling policies tied to queue depth, DB saturation, and cache hit rate**, not only CPU.
+---
 
-### DB strategy
-- Run PostgreSQL with **primary + multiple replicas**, with explicit routing for dashboard/analytics reads.
-- Make rollups the primary source for dashboard endpoints; raw `picks` queries should become fallback/drill-down paths rather than powering every top-level metric.
-- Partition `picks` and other append-heavy tables, archive cold partitions, and consider **time-series style retention tiers** for historical analytics.
-- If analytics complexity keeps increasing, add a **separate analytical store or warehouse** fed asynchronously from PostgreSQL. This is preferable before microservices because it isolates heavy read analytics without fragmenting the write path.
-- Use idempotent bulk loaders and batched status updates to absorb write bursts from major betting windows.
+## Bottleneck Context
 
-### Caching strategy
-- Treat cache as a product feature with **tiered freshness classes**:
-  - near-real-time (seconds) for job status and active suggestions
-  - warm (1–5 min) for dashboards
-  - cold/precomputed for historical analytics.
-- Use **event-driven invalidation** from write paths and pipeline completion events instead of blanket cache clears.
-- Introduce **request coalescing/single-flight** for expensive cache misses so dozens of identical dashboard misses do not stampede the database.
-- Consider a dedicated Redis cluster or managed cache tier if queue and cache workloads are still sharing infrastructure.
+These are the known bottlenecks that motivated DECISION-001. They are preserved here for traceability.
 
-### Async processing changes
-- Formalize the pipeline as staged asynchronous work within Celery or an equivalent queue system:
-  1. fetch external odds
-  2. persist raw snapshot
-  3. normalize/match to internal events
-  4. score/generate picks
-  5. generate parlays
-  6. refresh rollups and cache pre-warm.
-- Scale workers by queue type and add **backpressure** rules so upstream rate limits do not cause unbounded retries or DB write storms.
-- Implement **provider-aware throttling**, quota forecasting, and fallback behaviors when the odds API is unavailable (reuse latest snapshot, mark suggestions stale, postpone recompute).
-- If the external dependency becomes the dominant constraint, the first justified service split is **ingestion**, not the entire application. That split would only be warranted once the provider integration, replay logic, and rate-limited scheduling need an independent lifecycle.
+1. **Dashboard reads are expensive at scale.** `dashboard_service.get_summary()` issues multiple aggregate queries (`COUNT`, status counts, `SUM`, `AVG`, streak lookup) per cache miss — several DB round trips against `picks` on a single uncached request.[^dashboard]
+2. **Cache invalidation uses Redis `KEYS`.** Every pick create/update invalidates dashboard cache by scanning `dashboard:summary:*` — an O(N) blocking anti-pattern that degrades with keyspace growth.[^cache]
+3. **The async pipeline is serialized.** Pipeline runs use a single queue with transient Redis-only state expiring after 24h.[^pipeline-router][^worker]
+4. **Pipeline writes are row-by-row.** The runner inserts picks/parlays in loops and re-resolves defaults per row.[^runner]
+5. **External odds ingestion is synchronous and retry-heavy.** HTTP calls with retries against The Odds API inside each job — upstream latency directly extends job runtime.[^odds]
+6. **Single-primary PostgreSQL topology.** No read replicas, no partitioning, no workload isolation.[^db]
+7. **Redis carries three workloads.** API cache, Celery broker, and Celery result/job state compete for the same instance.[^compose]
 
-## Recommended path
+---
 
-- **Immediately:** fix cache invalidation, add dashboard rollups, add indexes, and separate Redis cache from queue usage logically.
-- **Next:** introduce read replicas, bulk pipeline writes, staged Celery queues, and persisted odds snapshots.
-- **Later:** shift dashboards to precomputed aggregates, add partitioning, and only consider a service split around ingestion if scaling/operational data proves the monolith boundary is the bottleneck.
+## Transition Plan
 
-This path directly addresses the bottlenecks already visible in the codebase without introducing premature microservices.
+The transition from live aggregates to `agg_*` tables follows four mandatory phases. No phase may be skipped. Each phase has explicit entry criteria, exit criteria, and a rollback path.
 
-[^current-arch]: See the current architecture and runtime topology in `README.md`.
-[^dashboard]: `app/services/dashboard_service.py` performs multiple aggregate queries and only avoids them on Redis hits.
-[^cache]: `app/services/cache_service.py` invalidates dashboard cache via Redis `KEYS`, and pick mutations call that invalidation path.
-[^pipeline-router]: `app/routers/pipeline.py` uses Redis keys for per-job status plus a Redis idempotency key.
-[^worker]: `app/worker/tasks.py` stores job state in Redis and executes the full pipeline in one Celery task.
-[^runner]: `app/worker/pipeline/runner.py` loops through inserts and does the full ingestion/compute flow inline.
-[^odds]: `app/worker/pipeline/odds_client.py` performs synchronous external API calls with retries.
-[^db]: `app/core/database.py` shows the current single-primary engine/pool setup.
-[^compose]: `docker-compose.yml` shows Redis serving as cache, broker, and result backend.
+### Phase 1: Shadow Aggregates
+
+**Objective:** Deploy `agg_*` tables and populate them asynchronously without changing any read path.
+
+**Entry criteria:**
+- DECISION-001 is ratified (this document).
+- Alembic migrations for all initial `agg_*` tables are merged and applied.
+- Celery tasks that compute and write aggregations are deployed.
+
+**Work:**
+1. Create `agg_dashboard_summary`, `agg_daily_performance`, `agg_streak`, and any fiscal aggregation tables required by current endpoints.
+2. Each table includes: computed columns, `updated_at` timestamp, and a `computation_version` integer for schema evolution.
+3. Deploy Celery tasks that recompute `agg_*` rows on pick mutation signals and on pipeline completion.
+4. Add monitoring: aggregation task success rate, latency, and `updated_at` freshness per table.
+5. **No read path changes.** Dashboard and fiscal endpoints continue reading from `picks` via live queries.
+
+**Exit criteria:**
+- `agg_*` tables are populated and updated continuously for >= 7 days in production.
+- Aggregation task error rate < 0.1%.
+- `updated_at` freshness meets the defined staleness SLA for each table.
+
+**Rollback:** Drop `agg_*` tables. No user-facing impact.
+
+---
+
+### Phase 2: Dual-Read Validation (Internal Logs)
+
+**Objective:** Read from both `agg_*` and live queries in parallel, compare results, and log discrepancies — without exposing `agg_*` data to users.
+
+**Entry criteria:**
+- Phase 1 exit criteria met.
+
+**Work:**
+1. Modify Dashboard and fiscal service methods to perform both reads: the existing live query (served to the user) and an `agg_*` read (logged, never returned).
+2. Compare results and log deltas with structured fields: `endpoint`, `user_id`, `live_value`, `agg_value`, `delta`, `agg_updated_at`, `timestamp`.
+3. Set up alerts on delta thresholds. Acceptable drift tolerance per metric must be defined before entering this phase (e.g., total count delta <= 1, ROI delta <= 0.01%).
+4. **The live query remains the source of truth for all responses.** `agg_*` data is internal-only during this phase.
+
+**Exit criteria:**
+- Dual-read deployed for >= 14 days in production.
+- Delta alerts are configured and operational.
+- Observed delta rate is below the defined tolerance for every metric for >= 7 consecutive days.
+- No aggregation task failures that caused stale data beyond the staleness SLA during the observation window.
+
+**Rollback:** Remove the dual-read code path. Service reverts to live-query-only. No user-facing impact.
+
+---
+
+### Phase 3: Full Cutover
+
+**Objective:** Switch all Dashboard and fiscal endpoints to read exclusively from `agg_*` tables. Live aggregate queries on `picks` are removed from the request path.
+
+**Entry criteria:**
+- Phase 2 exit criteria met.
+- Sign-off from Principal Architect confirming dual-read validation data is satisfactory.
+
+**Work:**
+1. Update Dashboard and fiscal service methods to read from `agg_*` tables only.
+2. Remove all live aggregate queries (`SUM`, `COUNT`, `AVG`, `GROUP BY`) on `picks` from the synchronous request path.
+3. Update Redis cache-aside to back cache misses with `agg_*` reads.
+4. Replace Redis `KEYS`-based invalidation with targeted key deletion or versioned namespaces (O(1) per invalidation).
+5. Deploy and monitor. Track: endpoint latency p50/p95/p99, `agg_*` freshness, cache hit rate, DB query count per request.
+
+**Exit criteria:**
+- All Dashboard and fiscal endpoints serve data from `agg_*` exclusively for >= 14 days.
+- No live aggregate query on `picks` exists in the request path (verified by code audit and query log analysis).
+- Endpoint latency p95 is improved or unchanged compared to pre-cutover baseline.
+- No user-reported data discrepancy attributable to aggregation staleness.
+
+**Rollback:** Revert service methods to live queries (Phase 2 dual-read code can be re-enabled as an intermediate step). Cache invalidation reverts to previous strategy.
+
+---
+
+### Phase 4: Cleanup
+
+**Objective:** Remove all dead code, legacy query paths, and transitional infrastructure.
+
+**Entry criteria:**
+- Phase 3 exit criteria met.
+- >= 30 days since full cutover with no rollback.
+
+**Work:**
+1. Delete all legacy live aggregate query code from Dashboard and fiscal services.
+2. Remove dual-read comparison logic and logging infrastructure.
+3. Remove any temporary flags, feature toggles, or environment variables used during the transition.
+4. Update `docs/ai_agent_rules.md` to reference `agg_*` tables as the canonical read source for aggregated data.
+5. Archive this transition plan section as completed.
+
+**Exit criteria:**
+- No reference to live aggregate queries on `picks` in the request path exists in the codebase.
+- CI passes. All tests updated to reflect `agg_*`-backed reads.
+
+**Rollback:** Not applicable. Phase 4 is cosmetic cleanup after proven stability.
+
+---
+
+## Prohibited Patterns (Post-Cutover)
+
+After Phase 3 completion, the following are permanently prohibited:
+
+| Pattern | Status |
+|---|---|
+| `SELECT COUNT(*) FROM picks` in any endpoint handler or service called by an endpoint | **PROHIBITED** |
+| `SELECT SUM(units) FROM picks` or any aggregate function on `picks` in the request path | **PROHIBITED** |
+| `REFRESH MATERIALIZED VIEW` called by or blocking any user-facing request | **PROHIBITED** |
+| Redis `KEYS` command in production code | **PROHIBITED** |
+| Cache miss fallthrough that runs a live aggregate on `picks` | **PROHIBITED** |
+| New Dashboard/fiscal metric without a corresponding `agg_*` column or table | **PROHIBITED** |
+
+---
+
+## References
+
+[^dashboard]: `app/services/dashboard_service.py` — multiple aggregate queries per cache miss.
+[^cache]: `app/services/cache_service.py` — `KEYS`-based invalidation on pick mutations.
+[^pipeline-router]: `app/routers/pipeline.py` — Redis keys for per-job status and idempotency.
+[^worker]: `app/worker/tasks.py` — job state in Redis, full pipeline in one Celery task.
+[^runner]: `app/worker/pipeline/runner.py` — row-by-row inserts, inline ingestion/compute flow.
+[^odds]: `app/worker/pipeline/odds_client.py` — synchronous external API calls with retries.
+[^db]: `app/core/database.py` — single-primary engine/pool setup.
+[^compose]: `docker-compose.yml` — Redis serving cache, broker, and result backend.
