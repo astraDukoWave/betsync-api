@@ -7,6 +7,7 @@ que se entrega al contador.
 Jurisdicción objetivo: México (SAT).
 Moneda base de reporte: MXN.
 """
+import logging
 from datetime import date
 from decimal import Decimal
 from typing import List, Tuple
@@ -14,9 +15,13 @@ from typing import List, Tuple
 from sqlalchemy import func, select, case, and_, extract, or_
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 from app.models.pick import Pick, PickStatus
 from app.models.transaction import Transaction, TransactionType
 from app.schemas.fiscal import FiscalSummaryResponse
+from app.services.aggregate_read_gate import redis_blocks_aggregate_reads
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Constantes
@@ -54,6 +59,7 @@ async def _aggregate_picks(
     db: AsyncSession,
     tax_year: int,
 ) -> Tuple[Decimal, Decimal, int, int]:
+    # TODO: Cleanup - Raw queries retained for rollback safety. Removal only after 30 days of stability.
     """Agrega picks ganados y perdidos para el año fiscal dado.
 
     Lógica de fechas:
@@ -167,6 +173,7 @@ async def _aggregate_transactions(
 async def get_fiscal_summary(
     db: AsyncSession,
     tax_year: int,
+    redis=None,
 ) -> FiscalSummaryResponse:
     """Calcula el resumen fiscal completo para el año indicado.
 
@@ -183,11 +190,16 @@ async def get_fiscal_summary(
         Sesión de base de datos asíncrona (SQLAlchemy 2.0).
     tax_year : int
         Año fiscal a consultar (ej. 2025).
+    redis
+        Optional Redis client for runtime aggregate cutover controls.
 
     Returns
     -------
     FiscalSummaryResponse
     """
+    if settings.use_aggregates_for_dashboard and await redis_blocks_aggregate_reads(redis):
+        logger.warning("[AGG_FALLBACK_TRIGGERED] reason:runtime_toggle")
+
     (
         gross_winnings,
         gross_losses,

@@ -10,11 +10,12 @@ import csv
 import io
 from datetime import date
 
+import redis.asyncio as aioredis
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.dependencies import get_db
+from app.core.dependencies import get_db, get_redis
 from app.schemas.fiscal import CSV_HEADERS, FiscalSummaryResponse
 from app.services import fiscal_service
 
@@ -45,8 +46,9 @@ async def get_fiscal_summary(
         example=2025,
     ),
     db: AsyncSession = Depends(get_db),
+    redis: aioredis.Redis = Depends(get_redis),
 ) -> FiscalSummaryResponse:
-    return await fiscal_service.get_fiscal_summary(db, tax_year)
+    return await fiscal_service.get_fiscal_summary(db, tax_year, redis)
 
 
 # ---------------------------------------------------------------------------

@@ -17,6 +17,10 @@ class Settings(BaseSettings):
 
     dashboard_cache_ttl: int = 300
 
+    # Phase 3: when True, dashboard/fiscal may read agg_* where implemented;
+    # Redis key dashboard:use_raw_fallback still forces raw without restart.
+    use_aggregates_for_dashboard: bool = False
+
     model_config = SettingsConfigDict(
         env_file=".env", case_sensitive=False, extra="ignore",
     )
