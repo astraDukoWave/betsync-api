@@ -18,6 +18,11 @@ class AggPickDaily(Base):
 
     day: Mapped[date] = mapped_column(Date, primary_key=True)
     pick_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    won_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    lost_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    push_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    pending_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    void_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
     total_stake: Mapped[Decimal] = mapped_column(
         Numeric(14, 2), nullable=False, server_default="0"
     )

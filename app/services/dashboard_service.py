@@ -14,7 +14,11 @@ from app.core.config import settings
 from app.models.aggregates import AggPickDaily
 from app.models.pick import Pick, PickStatus
 from app.schemas.dashboard import DashboardSummary, StreakInfo, SegmentResponse
-from app.services.aggregate_read_gate import redis_blocks_aggregate_reads
+from app.services.aggregate_read_gate import (
+    redis_agg_fail_circuit_is_open,
+    redis_blocks_aggregate_reads,
+    redis_set_agg_fail_circuit,
+)
 from app.services.cache_service import get_cache, set_cache
 
 logger = logging.getLogger(__name__)
@@ -37,6 +41,22 @@ _RAW_DAY_PROFIT_SQL = """
 
 AGG_STALENESS_MAX = timedelta(minutes=10)
 DUAL_READ_SAMPLE_RATE = 0.01
+
+# Structured logging: global read-path mode for observability (scaling_strategy runtime safeguards).
+HEALTHY = "HEALTHY"
+DEGRADED_STALE = "DEGRADED_STALE"
+DEGRADED_INCOMPLETE = "DEGRADED_INCOMPLETE"
+CIRCUIT_OPEN = "CIRCUIT_OPEN"
+
+
+def _meta_extra(operational_mode: str) -> dict:
+    return {"_meta": {"operational_mode": operational_mode}}
+
+
+def _operational_mode_for_fallback_reason(reason: str) -> str:
+    if reason == "stale_data":
+        return DEGRADED_STALE
+    return DEGRADED_INCOMPLETE
 
 
 def _days_inclusive(date_from: date, date_to: date) -> list[date]:
@@ -65,27 +85,54 @@ def _dashboard_summary_agg_tables_eligible(
 
 
 def _trigger_agg_fallback(reason: str) -> None:
+    mode = _operational_mode_for_fallback_reason(reason)
+    extra = _meta_extra(mode)
     if reason == "stale_data":
         logger.error(
-            "agg_pick_daily data exceeded staleness SLA; using raw picks path"
+            "agg_pick_daily data exceeded staleness SLA; using raw picks path",
+            extra=extra,
         )
-    logger.warning("[AGG_FALLBACK_TRIGGERED] reason:%s", reason)
+    if reason == "inconsistent_internal":
+        logger.error(
+            "agg_pick_daily row failed internal status-count consistency; using raw picks path",
+            extra=extra,
+        )
+    logger.warning(
+        "[AGG_FALLBACK_TRIGGERED] reason:%s",
+        reason,
+        extra=extra,
+    )
+
+
+def _agg_row_status_counts_consistent(r: AggPickDaily) -> bool:
+    """Weakest-link integrity: every status bucket must partition pick_count (incl. void)."""
+    parts = (
+        int(r.won_count)
+        + int(r.lost_count)
+        + int(r.push_count)
+        + int(r.pending_count)
+        + int(r.void_count)
+    )
+    return int(r.pick_count) == parts
 
 
 def _validate_agg_pick_daily_rows(
     rows: list[AggPickDaily],
     expected_days: list[date],
 ) -> Optional[str]:
-    """Return None if OK, else missing_days or stale_data."""
+    """Return None if OK, else missing_days, stale_data, or inconsistent_internal."""
     expected_set = set(expected_days)
     got_days = {r.day for r in rows}
     if expected_set != got_days:
         return "missing_days"
+    for r in rows:
+        if not _agg_row_status_counts_consistent(r):
+            return "inconsistent_internal"
     now = datetime.now(timezone.utc)
-    max_u = max(rows, key=lambda r: r.updated_at).updated_at
-    if max_u.tzinfo is None:
-        max_u = max_u.replace(tzinfo=timezone.utc)
-    if now - max_u > AGG_STALENESS_MAX:
+    min_u = min(rows, key=lambda r: r.updated_at).updated_at
+    if min_u.tzinfo is None:
+        min_u = min_u.replace(tzinfo=timezone.utc)
+    if now - min_u > AGG_STALENESS_MAX:
         return "stale_data"
     return None
 
@@ -266,13 +313,23 @@ async def get_summary(
 
     env_agg = settings.use_aggregates_for_dashboard
     redis_blocked = await redis_blocks_aggregate_reads(redis)
+    circuit_open = await redis_agg_fail_circuit_is_open(redis)
     if env_agg and redis_blocked:
-        logger.warning("[AGG_FALLBACK_TRIGGERED] reason:runtime_toggle")
-    use_agg_reads = env_agg and not redis_blocked
+        logger.warning(
+            "[AGG_FALLBACK_TRIGGERED] reason:runtime_toggle",
+            extra=_meta_extra(DEGRADED_INCOMPLETE),
+        )
+    use_agg_reads = env_agg and not redis_blocked and not circuit_open
 
     agg_eligible = _dashboard_summary_agg_tables_eligible(
         date_from, date_to, market, grade,
     )
+
+    if circuit_open and agg_eligible and env_agg and not redis_blocked:
+        logger.info(
+            "[DASHBOARD_SUMMARY] skipping agg_pick_daily read (fail circuit open)",
+            extra=_meta_extra(CIRCUIT_OPEN),
+        )
 
     if (
         agg_eligible
@@ -296,7 +353,12 @@ async def get_summary(
             ):
                 await _maybe_log_agg_pick_daily_mismatch(db, date_from)
             await set_cache(redis, cache_key, data, ttl=cache_ttl)
+            logger.debug(
+                "dashboard.summary served from agg_pick_daily",
+                extra=_meta_extra(HEALTHY),
+            )
             return DashboardSummary(cache_hit=False, **data)
+        await redis_set_agg_fail_circuit(redis)
         _trigger_agg_fallback(vreason)
 
     data = await _compute_raw_summary_data(db, base)

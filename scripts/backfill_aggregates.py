@@ -31,6 +31,21 @@ logger = logging.getLogger(__name__)
 BATCH_SIZE = 1000
 COMPUTATION_VERSION = 1
 
+_STATUS_COUNT_KEYS = (
+    "won_count",
+    "lost_count",
+    "push_count",
+    "pending_count",
+    "void_count",
+)
+_STATUS_TO_COUNT_KEY = {
+    PickStatus.won: "won_count",
+    PickStatus.lost: "lost_count",
+    PickStatus.push: "push_count",
+    PickStatus.pending: "pending_count",
+    PickStatus.void: "void_count",
+}
+
 
 def _dimension_key(sportsbook_id: UUID) -> str:
     return f"sb:{sportsbook_id}"
@@ -50,12 +65,16 @@ def _pick_row_contribution(p: Pick) -> dict[str, Any]:
         )
     profit_contrib = profit if profit is not None else Decimal("0")
     return_contrib = settled_return if settled_return is not None else Decimal("0")
-    return {
+    sk = _STATUS_TO_COUNT_KEY[p.status]
+    row = {
         "pick_count": 1,
         "total_stake": stake_amt,
         "total_profit": profit_contrib,
         "total_settled_return": return_contrib,
     }
+    for k in _STATUS_COUNT_KEYS:
+        row[k] = 1 if k == sk else 0
+    return row
 
 
 def _merge(
@@ -67,12 +86,15 @@ def _merge(
             "total_stake": Decimal("0"),
             "total_profit": Decimal("0"),
             "total_settled_return": Decimal("0"),
+            **{k: 0 for k in _STATUS_COUNT_KEYS},
         }
     b = target[key]
     b["pick_count"] += contrib["pick_count"]
     b["total_stake"] += contrib["total_stake"]
     b["total_profit"] += contrib["total_profit"]
     b["total_settled_return"] += contrib["total_settled_return"]
+    for k in _STATUS_COUNT_KEYS:
+        b[k] += contrib[k]
 
 
 def _flush_daily(session, rows: dict[Any, dict[str, Any]]) -> None:
@@ -86,6 +108,7 @@ def _flush_daily(session, rows: dict[Any, dict[str, Any]]) -> None:
             "total_profit": m["total_profit"],
             "total_settled_return": m["total_settled_return"],
             "computation_version": COMPUTATION_VERSION,
+            **{k: m[k] for k in _STATUS_COUNT_KEYS},
         }
         for day, m in rows.items()
     ]
@@ -100,6 +123,11 @@ def _flush_daily(session, rows: dict[Any, dict[str, Any]]) -> None:
             + ins.excluded.total_settled_return,
             "computation_version": ins.excluded.computation_version,
             "updated_at": func.now(),
+            "won_count": AggPickDaily.won_count + ins.excluded.won_count,
+            "lost_count": AggPickDaily.lost_count + ins.excluded.lost_count,
+            "push_count": AggPickDaily.push_count + ins.excluded.push_count,
+            "pending_count": AggPickDaily.pending_count + ins.excluded.pending_count,
+            "void_count": AggPickDaily.void_count + ins.excluded.void_count,
         },
     )
     session.execute(ins)

@@ -17,6 +17,21 @@ from app.services.pick_service import _settlement_for_status
 
 COMPUTATION_VERSION = 1
 
+_STATUS_COUNT_KEYS = (
+    "won_count",
+    "lost_count",
+    "push_count",
+    "pending_count",
+    "void_count",
+)
+_STATUS_TO_COUNT_KEY: dict[PickStatus, str] = {
+    PickStatus.won: "won_count",
+    PickStatus.lost: "lost_count",
+    PickStatus.push: "push_count",
+    PickStatus.pending: "pending_count",
+    PickStatus.void: "void_count",
+}
+
 
 def _dimension_key(sportsbook_id: UUID) -> str:
     return f"sb:{sportsbook_id}"
@@ -36,12 +51,16 @@ def pick_row_contribution(p: Pick) -> dict[str, Any]:
         )
     profit_contrib = profit if profit is not None else Decimal("0")
     return_contrib = settled_return if settled_return is not None else Decimal("0")
-    return {
+    sk = _STATUS_TO_COUNT_KEY[p.status]
+    row = {
         "pick_count": 1,
         "total_stake": stake_amt,
         "total_profit": profit_contrib,
         "total_settled_return": return_contrib,
     }
+    for k in _STATUS_COUNT_KEYS:
+        row[k] = 1 if k == sk else 0
+    return row
 
 
 def recompute_pick_aggregates_for_day_sync(session, run_date: date) -> None:
@@ -55,6 +74,7 @@ def recompute_pick_aggregates_for_day_sync(session, run_date: date) -> None:
         "total_stake": Decimal("0"),
         "total_profit": Decimal("0"),
         "total_settled_return": Decimal("0"),
+        **{k: 0 for k in _STATUS_COUNT_KEYS},
     }
     dim_totals: dict[tuple[date, str], dict[str, Any]] = defaultdict(
         lambda: {
@@ -71,6 +91,8 @@ def recompute_pick_aggregates_for_day_sync(session, run_date: date) -> None:
         daily_totals["total_stake"] += c["total_stake"]
         daily_totals["total_profit"] += c["total_profit"]
         daily_totals["total_settled_return"] += c["total_settled_return"]
+        for k in _STATUS_COUNT_KEYS:
+            daily_totals[k] += c[k]
 
         key = (run_date, _dimension_key(p.sportsbook_id))
         b = dim_totals[key]
@@ -90,6 +112,7 @@ def recompute_pick_aggregates_for_day_sync(session, run_date: date) -> None:
         "total_profit": daily_totals["total_profit"],
         "total_settled_return": daily_totals["total_settled_return"],
         "computation_version": COMPUTATION_VERSION,
+        **{k: daily_totals[k] for k in _STATUS_COUNT_KEYS},
     }
     ins_d = insert(AggPickDaily).values(daily_row)
     ins_d = ins_d.on_conflict_do_update(
@@ -101,6 +124,11 @@ def recompute_pick_aggregates_for_day_sync(session, run_date: date) -> None:
             "total_settled_return": ins_d.excluded.total_settled_return,
             "computation_version": ins_d.excluded.computation_version,
             "updated_at": func.now(),
+            "won_count": ins_d.excluded.won_count,
+            "lost_count": ins_d.excluded.lost_count,
+            "push_count": ins_d.excluded.push_count,
+            "pending_count": ins_d.excluded.pending_count,
+            "void_count": ins_d.excluded.void_count,
         },
     )
     session.execute(ins_d)

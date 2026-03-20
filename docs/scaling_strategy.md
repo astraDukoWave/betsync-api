@@ -153,6 +153,35 @@ The transition from live aggregates to `agg_*` tables follows four mandatory pha
 
 ---
 
+## Runtime Safeguards
+
+These rules apply to the dashboard (and similar) aggregate read path before stress testing and in production. They complement DECISION-001 by constraining **when** `agg_pick_daily` (and peers) may be trusted for a response.
+
+### Staleness by `min(updated_at)` (weakest link)
+
+For a requested date range, load all `agg_pick_daily` rows covering that range. Freshness is **not** the newest row in the range; it is the **oldest** `updated_at` among those rows (`min(updated_at)`). If `now - min(updated_at)` exceeds the staleness SLA (10 minutes for `agg_pick_daily` in the current implementation), the handler must **not** serve totals from aggregates for that request: abort aggregate use and fall back to the RAW `picks` path for that summary.
+
+Rationale: one stale day in the window poisons blended KPIs; `max(updated_at)` would hide a lagging day.
+
+### Internal consistency (status partition)
+
+Each `agg_pick_daily` row must satisfy:
+
+`pick_count == won_count + lost_count + push_count + pending_count + void_count`
+
+(`void_count` is required so the identity partitions every `PickStatus`.) If **any** row in the requested range fails this check, abort aggregate reads for that request and fall back entirely to RAW. Do not partially blend agg and raw.
+
+### Circuit breaker after aggregate fallback (throttled cache pressure)
+
+When a request falls back to RAW because aggregate validation failed (staleness, missing days, or internal inconsistency), set Redis key `agg_fail_circuit_open` with a **60 second** TTL. While that key exists:
+
+- Do **not** query `agg_pick_daily` for dashboard summary (use RAW immediately).
+- Do **not** perform per-request cache invalidation tied to that fallback loop (avoid amplifying Redis/DB load into an auto–DDoS pattern).
+
+After TTL expiry, normal aggregate reads may resume so workers can catch up without permanent deadlock.
+
+---
+
 ## Prohibited Patterns (Post-Cutover)
 
 After Phase 3 completion, the following are permanently prohibited:
