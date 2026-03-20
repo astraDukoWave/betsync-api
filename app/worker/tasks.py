@@ -11,16 +11,21 @@ from app.core.config import settings
 logger = logging.getLogger(__name__)
 
 AGG_LOCK_PREFIX = "agg_lock:"
+AGG_ENQUEUE_LOCK_PREFIX = "agg_enqueue_lock:"
 
 
 def enqueue_recompute_aggregates_for_day(run_date: date) -> None:
-    """Best-effort debounce: skip enqueue if a recompute lock is already held."""
+    """Coalesce burst enqueues: one broker message per window; worker lock remains second line."""
     r = sync_redis.from_url(settings.redis_url, decode_responses=True)
-    key = f"{AGG_LOCK_PREFIX}{run_date.isoformat()}"
-    if r.exists(key):
+    run_iso = run_date.isoformat()
+    worker_key = f"{AGG_LOCK_PREFIX}{run_iso}"
+    if r.exists(worker_key):
+        return
+    enqueue_key = f"{AGG_ENQUEUE_LOCK_PREFIX}{run_iso}"
+    if not r.set(enqueue_key, "1", nx=True, ex=5):
         return
     recompute_aggregates_for_day.apply_async(
-        kwargs={"run_date_iso": run_date.isoformat()},
+        kwargs={"run_date_iso": run_iso},
         countdown=2,
     )
 
