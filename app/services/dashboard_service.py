@@ -20,6 +20,13 @@ from app.services.aggregate_read_gate import (
     redis_set_agg_fail_circuit,
 )
 from app.services.cache_service import get_cache, set_cache
+from app.services.operational_metrics import (
+    incr_dashboard_agg_fallback,
+    incr_dashboard_agg_hit,
+    incr_dashboard_raw_serve,
+    log_operational_health,
+    read_dashboard_ratios,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -114,6 +121,15 @@ def _agg_row_status_counts_consistent(r: AggPickDaily) -> bool:
         + int(r.void_count)
     )
     return int(r.pick_count) == parts
+
+
+def _agg_data_freshness_seconds(rows: list[AggPickDaily]) -> float:
+    """Age of the weakest link: now minus min(updated_at) across rows."""
+    now = datetime.now(timezone.utc)
+    min_u = min(rows, key=lambda r: r.updated_at).updated_at
+    if min_u.tzinfo is None:
+        min_u = min_u.replace(tzinfo=timezone.utc)
+    return (now - min_u).total_seconds()
 
 
 def _validate_agg_pick_daily_rows(
@@ -331,6 +347,14 @@ async def get_summary(
             extra=_meta_extra(CIRCUIT_OPEN),
         )
 
+    agg_fallback_for_metrics = bool(
+        agg_eligible
+        and date_from is not None
+        and date_to is not None
+        and env_agg
+        and not use_agg_reads
+    )
+
     if (
         agg_eligible
         and use_agg_reads
@@ -357,7 +381,21 @@ async def get_summary(
                 "dashboard.summary served from agg_pick_daily",
                 extra=_meta_extra(HEALTHY),
             )
+            await incr_dashboard_agg_hit(redis)
+            fresh_sec = _agg_data_freshness_seconds(rows)
+            ratios = await read_dashboard_ratios(redis)
+            log_operational_health(
+                event="dashboard_summary_read_path",
+                extra={
+                    "read_path": "agg",
+                    "data_freshness_seconds": round(fresh_sec, 3),
+                    "agg_hit_ratio": ratios["agg_hit_ratio"],
+                    "fallback_ratio": ratios["fallback_ratio"],
+                    "external_api_success_rate": ratios["external_api_success_rate"],
+                },
+            )
             return DashboardSummary(cache_hit=False, **data)
+        agg_fallback_for_metrics = True
         await redis_set_agg_fail_circuit(redis)
         _trigger_agg_fallback(vreason)
 
@@ -373,6 +411,21 @@ async def get_summary(
         await _maybe_log_agg_pick_daily_mismatch(db, date_from)
 
     await set_cache(redis, cache_key, data, ttl=cache_ttl)
+    await incr_dashboard_raw_serve(redis)
+    if agg_fallback_for_metrics:
+        await incr_dashboard_agg_fallback(redis)
+    ratios = await read_dashboard_ratios(redis)
+    log_operational_health(
+        event="dashboard_summary_read_path",
+        extra={
+            "read_path": "raw",
+            "data_freshness_seconds": None,
+            "agg_fallback": agg_fallback_for_metrics,
+            "agg_hit_ratio": ratios["agg_hit_ratio"],
+            "fallback_ratio": ratios["fallback_ratio"],
+            "external_api_success_rate": ratios["external_api_success_rate"],
+        },
+    )
     return DashboardSummary(cache_hit=False, **data)
 
 

@@ -1,3 +1,6 @@
+from decimal import Decimal
+
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -20,6 +23,15 @@ class Settings(BaseSettings):
     # Phase 3: when True, dashboard/fiscal may read agg_* where implemented;
     # Redis key dashboard:use_raw_fallback still forces raw without restart.
     use_aggregates_for_dashboard: bool = False
+
+    # Domain: profit vs implied settlement (stake × odds) tolerance in currency units.
+    pick_profit_tolerance: Decimal = Field(default=Decimal("0.02"))
+
+    # External Odds API — client-side pacing and response deduplication (idempotency cache).
+    odds_api_max_requests_per_minute: int = 30
+    odds_api_idempotency_ttl_seconds: int = 300
+    odds_api_retry_attempts: int = 5
+    operational_metrics_enabled: bool = True
 
     model_config = SettingsConfigDict(
         env_file=".env", case_sensitive=False, extra="ignore",

@@ -288,6 +288,7 @@ betsync-api/
 │   └── versions/                  Migration files
 ├── tests/
 │   ├── test_calculator.py         22 pure unit tests
+│   ├── test_domain_validator.py   Pick domain invariants (no DB)
 │   └── test_pipeline.py           Predictor tests
 ├── docs/
 │   ├── api_edge_cases.md          Edge case documentation
@@ -335,11 +336,14 @@ In Docker Compose, `DATABASE_URL` and `DATABASE_URL_SYNC` are constructed automa
 ### Run tests
 
 ```bash
-# Unit tests (no DB required)
+# Unit tests (no DB required; use the Python version from the API image — 3.14+ local may lack wheels)
 python -m pytest tests/ -v
 
-# Inside Docker
-docker compose exec api python -m pytest tests/ -v
+# Inside Docker (recommended; no need for api to be already running)
+docker compose run --rm api pytest tests/ -v
+
+# Pick domain invariants only
+docker compose run --rm api pytest tests/test_domain_validator.py -q
 ```
 
 ### Lint

@@ -1,9 +1,11 @@
+import hashlib
 import logging
 import uuid
 from datetime import date, datetime
 from decimal import Decimal
 from typing import Any
 
+import redis as sync_redis
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -16,6 +18,7 @@ from app.models.pick import Pick, PickGrade, PickSource, PickStatus
 from app.worker.pipeline.calculator import (
     american_to_decimal, calc_implied_prob, build_parlay_suggestions,
 )
+from app.services.pick_service import DomainValidator
 from app.worker.pipeline.odds_client import OddsApiClient, OddsAPIError
 
 logger = logging.getLogger(__name__)
@@ -27,9 +30,14 @@ class PipelineRunner:
     def __init__(self, db: Session, settings):
         self.db = db
         self.settings = settings
+        self._redis = sync_redis.from_url(settings.redis_url, decode_responses=True)
         self.client = OddsApiClient(
             api_key=settings.odds_api_key,
             base_url=settings.odds_api_base_url,
+            max_requests_per_minute=settings.odds_api_max_requests_per_minute,
+            idempotency_ttl_seconds=settings.odds_api_idempotency_ttl_seconds,
+            max_retry_attempts=settings.odds_api_retry_attempts,
+            redis_client=self._redis,
         )
 
     def run(self, run_date: str) -> dict[str, Any]:
@@ -41,7 +49,7 @@ class PipelineRunner:
             logger.info("No scheduled matches for %s", run_date)
             return {"picks_suggested": 0, "parlays_suggested": 0}
 
-        odds_data = self._fetch_all_odds()
+        odds_data = self._fetch_all_odds(run_dt)
         picks = self._process_odds(matches, odds_data, config)
         self._bulk_insert_picks(picks, run_dt)
         parlays_count = self._bulk_insert_parlays(picks, config, run_dt)
@@ -79,10 +87,17 @@ class PipelineRunner:
         logger.info("Found %d scheduled matches for pipeline", len(matches))
         return matches
 
-    def _fetch_all_odds(self) -> dict:
+    def _fetch_all_odds(self, run_dt: date) -> dict:
         odds_index = {}
+        idempotency_key = hashlib.sha256(
+            f"v1|{run_dt.isoformat()}|soccer|h2h|us".encode(),
+        ).hexdigest()
         try:
-            data = self.client.get_odds(sport="soccer", markets="h2h")
+            data = self.client.get_odds(
+                sport="soccer",
+                markets="h2h",
+                idempotency_key=idempotency_key,
+            )
             for event in data:
                 key = (
                     event.get("home_team", "").lower(),
@@ -180,6 +195,11 @@ class PipelineRunner:
                 grade=PickGrade(p["grade"]),
                 status=PickStatus.pending,
                 source=PickSource.pipeline,
+            )
+            DomainValidator.validate(
+                obj,
+                None,
+                profit_tolerance=self.settings.pick_profit_tolerance,
             )
             self.db.add(obj)
 

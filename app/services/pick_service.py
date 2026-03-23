@@ -1,4 +1,5 @@
 import logging
+from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal
 from typing import Optional
@@ -6,9 +7,8 @@ from uuid import UUID
 
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
-
-from app.core.exceptions import NotFoundError, ConflictError, BadRequestError
+from app.core.config import settings
+from app.core.exceptions import NotFoundError, ConflictError, BadRequestError, UnprocessableError
 from app.models.pick import Pick, PickStatus, PickGrade, PickSource
 from app.models.parlay_pick import ParlayPick
 from app.schemas.pick import PickCreate, PickUpdate, PickResolve, PickConfirm
@@ -19,6 +19,159 @@ logger = logging.getLogger(__name__)
 
 GRADE_THRESHOLDS = {"A": 0.55, "B": 0.50}
 
+_TERMINAL_STATUSES = frozenset(
+    {PickStatus.won, PickStatus.lost, PickStatus.push, PickStatus.void}
+)
+_ALLOWED_FROM_PENDING = frozenset(
+    {PickStatus.won, PickStatus.lost, PickStatus.push, PickStatus.void}
+)
+
+
+@dataclass(frozen=True)
+class PickPersistSnapshot:
+    status: PickStatus
+    stake: Optional[Decimal]
+    odds_american: int
+    odds_decimal: Decimal
+    profit: Optional[Decimal]
+    settled_return: Optional[Decimal]
+
+
+def pick_persist_snapshot(pick: Pick) -> PickPersistSnapshot:
+    return PickPersistSnapshot(
+        status=pick.status,
+        stake=pick.stake,
+        odds_american=pick.odds_american,
+        odds_decimal=pick.odds_decimal,
+        profit=pick.profit,
+        settled_return=pick.settled_return,
+    )
+
+
+class DomainValidator:
+    """Enforces financial and lifecycle invariants before any Pick reaches the database."""
+
+    @staticmethod
+    def _expected_profit(
+        status: PickStatus,
+        stake: Optional[Decimal],
+        odds_decimal: Decimal,
+    ) -> Optional[Decimal]:
+        if stake is None:
+            return None
+        if status == PickStatus.won:
+            return stake * odds_decimal - stake
+        if status == PickStatus.lost:
+            return -stake
+        if status == PickStatus.push:
+            return Decimal("0")
+        if status == PickStatus.void:
+            return Decimal("0")
+        return None
+
+    @classmethod
+    def validate(
+        cls,
+        pick: Pick,
+        prior: Optional[PickPersistSnapshot],
+        *,
+        profit_tolerance: Decimal,
+    ) -> None:
+        if pick.stake is not None and pick.stake <= 0:
+            raise UnprocessableError(
+                "DOMAIN_STAKE_INVALID",
+                "stake must be strictly greater than zero when provided",
+                meta={"stake": str(pick.stake)},
+            )
+
+        if prior is not None:
+            if prior.status in _TERMINAL_STATUSES:
+                if pick.status != prior.status:
+                    raise UnprocessableError(
+                        "DOMAIN_STATUS_IMMUTABLE",
+                        "Resolved picks cannot change status",
+                        meta={
+                            "from": prior.status.value,
+                            "to": pick.status.value,
+                        },
+                    )
+                if pick.stake != prior.stake:
+                    raise UnprocessableError(
+                        "DOMAIN_STAKE_IMMUTABLE",
+                        "Cannot change stake after resolution",
+                    )
+                if pick.odds_american != prior.odds_american:
+                    raise UnprocessableError(
+                        "DOMAIN_ODDS_IMMUTABLE",
+                        "Cannot change odds after resolution",
+                    )
+                if pick.odds_decimal != prior.odds_decimal:
+                    raise UnprocessableError(
+                        "DOMAIN_ODDS_IMMUTABLE",
+                        "Cannot change odds_decimal after resolution",
+                    )
+            elif prior.status != pick.status:
+                if prior.status != PickStatus.pending:
+                    raise UnprocessableError(
+                        "DOMAIN_INVALID_TRANSITION",
+                        "Invalid pick status transition",
+                        meta={
+                            "from": prior.status.value,
+                            "to": pick.status.value,
+                        },
+                    )
+                if pick.status not in _ALLOWED_FROM_PENDING:
+                    raise UnprocessableError(
+                        "DOMAIN_INVALID_TRANSITION",
+                        "Invalid transition from pending",
+                        meta={"to": pick.status.value},
+                    )
+
+        if pick.status == PickStatus.pending:
+            if pick.profit is not None:
+                raise UnprocessableError(
+                    "DOMAIN_PENDING_PROFIT",
+                    "A pending pick cannot have a definitive profit",
+                )
+            if pick.settled_return is not None:
+                raise UnprocessableError(
+                    "DOMAIN_PENDING_SETTLEMENT",
+                    "A pending pick cannot have settled_return",
+                )
+
+        if pick.status == PickStatus.void:
+            if pick.profit != Decimal("0"):
+                raise UnprocessableError(
+                    "DOMAIN_VOID_PROFIT",
+                    "Void picks must have profit exactly zero",
+                    meta={"profit": str(pick.profit)},
+                )
+
+        if pick.status in (PickStatus.won, PickStatus.lost, PickStatus.push):
+            if pick.stake is None or pick.stake <= 0:
+                raise UnprocessableError(
+                    "DOMAIN_RESOLVED_REQUIRES_STAKE",
+                    "Won, lost, and push picks require a positive stake",
+                )
+            expected = cls._expected_profit(
+                pick.status, pick.stake, pick.odds_decimal
+            )
+            if pick.profit is None or expected is None:
+                raise UnprocessableError(
+                    "DOMAIN_PROFIT_REQUIRED",
+                    "Resolved pick must carry profit consistent with stake and odds",
+                )
+            if abs(pick.profit - expected) > profit_tolerance:
+                raise UnprocessableError(
+                    "DOMAIN_PROFIT_MISMATCH",
+                    "profit is not consistent with stake and odds within tolerance",
+                    meta={
+                        "profit": str(pick.profit),
+                        "expected": str(expected),
+                        "tolerance": str(profit_tolerance),
+                    },
+                )
+
 
 def _settlement_for_status(
     status: PickStatus,
@@ -27,6 +180,8 @@ def _settlement_for_status(
 ) -> tuple[Optional[Decimal], Optional[Decimal]]:
     """Return (settled_return, profit) for a resolved status."""
     if stake is None:
+        if status == PickStatus.void:
+            return None, Decimal("0")
         return None, None
     if status == PickStatus.won:
         gross = stake * odds_decimal
@@ -36,7 +191,7 @@ def _settlement_for_status(
     if status == PickStatus.push:
         return stake, Decimal("0")
     if status == PickStatus.void:
-        return None, None
+        return stake, Decimal("0")
     return None, None
 
 
@@ -67,6 +222,7 @@ async def create_pick(db: AsyncSession, data: PickCreate) -> Pick:
         status=PickStatus.pending,
         source=data.source,
     )
+    DomainValidator.validate(pick, None, profit_tolerance=settings.pick_profit_tolerance)
     db.add(pick)
     await db.flush()
     await db.refresh(pick)
@@ -129,6 +285,8 @@ async def update_pick(db: AsyncSession, pick_id: UUID, data: PickUpdate) -> Pick
             meta={"current_status": pick.status.value},
         )
 
+    prior = pick_persist_snapshot(pick)
+
     update_data = data.model_dump(exclude_unset=True)
     if "odds_american" in update_data:
         odds_dec = american_to_decimal(update_data["odds_american"])
@@ -142,6 +300,10 @@ async def update_pick(db: AsyncSession, pick_id: UUID, data: PickUpdate) -> Pick
     for field, value in update_data.items():
         if field != "odds_american":
             setattr(pick, field, value)
+
+    DomainValidator.validate(
+        pick, prior, profit_tolerance=settings.pick_profit_tolerance
+    )
 
     await db.flush()
     await db.refresh(pick)
@@ -158,6 +320,8 @@ async def resolve_pick(db: AsyncSession, pick_id: UUID, data: PickResolve) -> Pi
             meta={"current_status": pick.status.value, "pick_id": str(pick_id)},
         )
 
+    prior = pick_persist_snapshot(pick)
+
     pick.status = data.status
     pick.resolved_at = datetime.utcnow()
     pick.settled_return, pick.profit = _settlement_for_status(
@@ -169,6 +333,10 @@ async def resolve_pick(db: AsyncSession, pick_id: UUID, data: PickResolve) -> Pi
         pick.clv = Decimal(
             str(calc_clv(float(pick.odds_decimal), float(data.closing_odds_decimal)))
         )
+
+    DomainValidator.validate(
+        pick, prior, profit_tolerance=settings.pick_profit_tolerance
+    )
 
     await db.flush()
     await db.refresh(pick)
@@ -195,7 +363,17 @@ async def delete_pick(db: AsyncSession, pick_id: UUID) -> Pick:
             "Cannot delete a pick that belongs to a parlay",
         )
 
+    prior = pick_persist_snapshot(pick)
     pick.status = PickStatus.void
+    pick.resolved_at = datetime.utcnow()
+    pick.settled_return, pick.profit = _settlement_for_status(
+        PickStatus.void, pick.stake, pick.odds_decimal
+    )
+
+    DomainValidator.validate(
+        pick, prior, profit_tolerance=settings.pick_profit_tolerance
+    )
+
     await db.flush()
     await db.refresh(pick)
     enqueue_recompute_aggregates_for_day(pick.run_date)
@@ -210,10 +388,20 @@ async def confirm_pick(db: AsyncSession, pick_id: UUID, data: PickConfirm) -> Pi
             "Only pipeline-sourced picks can be confirmed",
         )
 
+    prior = pick_persist_snapshot(pick)
+
     if data.confirmed:
         pick.confirmed_at = datetime.utcnow()
     else:
         pick.status = PickStatus.void
+        pick.resolved_at = datetime.utcnow()
+        pick.settled_return, pick.profit = _settlement_for_status(
+            PickStatus.void, pick.stake, pick.odds_decimal
+        )
+
+    DomainValidator.validate(
+        pick, prior, profit_tolerance=settings.pick_profit_tolerance
+    )
 
     await db.flush()
     await db.refresh(pick)

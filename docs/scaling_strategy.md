@@ -1,7 +1,7 @@
 # BetSync Scaling Strategy
 
 > **Status:** LOCKED — Changes require Principal Architect sign-off and RFC process.
-> **Last updated:** 2026-03-19
+> **Last updated:** 2026-03-20
 
 ---
 
@@ -179,6 +179,59 @@ When a request falls back to RAW because aggregate validation failed (staleness,
 - Do **not** perform per-request cache invalidation tied to that fallback loop (avoid amplifying Redis/DB load into an auto–DDoS pattern).
 
 After TTL expiry, normal aggregate reads may resume so workers can catch up without permanent deadlock.
+
+---
+
+## Domain Integrity Rules
+
+These rules apply to **all** `Pick` persistence paths (REST services **and** the synchronous pipeline worker). Invalid monetary state must be rejected **before** `flush`/`commit` so the database never becomes the system of record for inconsistent ledger data.
+
+### Financial invariants
+
+1. **Positive stake when present:** If `stake` is not `NULL`, it MUST be strictly greater than zero.
+2. **Settlement consistency:** For statuses `won`, `lost`, and `push`, `profit` MUST match the implied value from `(stake, odds_decimal)` within a configurable business tolerance (`PICK_PROFIT_TOLERANCE`, default `0.02` currency units). Exact floating equality is NOT required.
+3. **`void` profit:** `void` picks MUST have `profit = 0` exactly (not `NULL`).
+4. **`pending` settlement:** `pending` picks MUST NOT carry a definitive `profit` or `settled_return` (both `NULL`).
+
+### Lifecycle and immutability
+
+1. **Terminal statuses:** `won`, `lost`, `push`, and `void` are terminal. Status MUST NOT change after resolution.
+2. **No retroactive price edits:** After resolution, `stake`, `odds_american`, and `odds_decimal` MUST NOT change.
+3. **Valid transitions:** From `pending`, only transitions to `won`, `lost`, `push`, or `void` are allowed (e.g. never `won` → `pending`).
+
+### RAW path as last resort
+
+Aggregate reads may fall back to RAW `picks` when runtime safeguards fire (see above). Domain validation is independent: even when reads use RAW, **writes** still pass through the same `DomainValidator` so invalid money never lands in `picks`.
+
+---
+
+## External Dependency Resilience
+
+The Odds API client (`app/worker/pipeline/odds_client.py`) MUST treat upstream failures as normal operating conditions.
+
+### Retries
+
+- Use **tenacity** with **exponential backoff + jitter** (`wait_random_exponential`) for transient errors (connection/timeouts and retryable HTTP statuses including `429`, `5xx`).
+- Non-retryable client errors (`401`, `422`) MUST fail fast without retry storms.
+
+### Internal rate limiting
+
+- Enforce a configurable maximum **requests per minute** (`ODDS_API_MAX_REQUESTS_PER_MINUTE`) via a minimum inter-request interval so the worker does not self-inflict `429` responses under load.
+
+### Idempotency
+
+- Successful `get_odds` responses MAY be cached in Redis under an **idempotency key** (e.g. hash of run date + sport + markets + regions) for a TTL (`ODDS_API_IDEMPOTENCY_TTL_SECONDS`). If the HTTP client appears to time out after the server already responded, a retry MUST reuse the same payload instead of implying duplicate downstream writes.
+
+### Operational SLO signals
+
+The following MUST be observable via structured logs and/or Redis counters (`OPERATIONAL_METRICS_ENABLED`):
+
+| Signal | Meaning |
+|--------|---------|
+| `agg_hit_ratio` | Rolling ratio of dashboard summary requests served from `agg_pick_daily` vs raw computation (uncached path). |
+| `fallback_ratio` | Rolling ratio of aggregate **fallback** events (staleness, inconsistency, circuit, or runtime raw toggle while aggregates were desired) vs total uncached summary reads. |
+| `data_freshness_seconds` | When serving from aggregates: `now − min(updated_at)` across the requested `agg_pick_daily` rows (weakest link). |
+| `external_api_success_rate` | Rolling success vs failure counts for Odds API calls (after retries exhausted). |
 
 ---
 

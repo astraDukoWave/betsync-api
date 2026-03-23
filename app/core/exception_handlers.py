@@ -1,7 +1,13 @@
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
-from app.core.exceptions import AppError, NotFoundError, ConflictError, BadRequestError
+from app.core.exceptions import (
+    AppError,
+    NotFoundError,
+    ConflictError,
+    BadRequestError,
+    UnprocessableError,
+)
 
 
 def register_exception_handlers(app: FastAPI):
@@ -16,6 +22,20 @@ def register_exception_handlers(app: FastAPI):
     @app.exception_handler(BadRequestError)
     async def bad_request_handler(request: Request, exc: BadRequestError):
         return JSONResponse(status_code=400, content={"error": {"code": exc.code, "message": exc.message, "field": exc.field, "meta": exc.meta}})
+
+    @app.exception_handler(UnprocessableError)
+    async def unprocessable_handler(request: Request, exc: UnprocessableError):
+        return JSONResponse(
+            status_code=422,
+            content={
+                "error": {
+                    "code": exc.code,
+                    "message": exc.message,
+                    "field": exc.field,
+                    "meta": exc.meta,
+                }
+            },
+        )
 
     @app.exception_handler(RequestValidationError)
     async def validation_handler(request: Request, exc: RequestValidationError):
