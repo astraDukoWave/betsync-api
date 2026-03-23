@@ -12,6 +12,7 @@ from app.models import (  # noqa: F401
     Sport, Competition, Match, Sportsbook,
     Pick, Parlay, ParlayPick, SystemConfig,
     AggPickDaily, AggPickDimensionDaily,
+    UserBalance, LedgerEntry, OutboxEvent,
 )
 
 config = context.config

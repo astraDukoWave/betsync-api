@@ -11,9 +11,13 @@ from sqlalchemy.orm import sessionmaker
 from app.models.sport import Sport
 from app.models.competition import Competition
 from app.models.match import Match
+from app.models.balance import UserBalance
 
 # --- Configuración ---
 BASE_URL = "http://localhost:8000/api/v1"
+
+# Wallet used for staked picks via POST /picks (must exist in user_balances).
+SEED_USER_ID = uuid.UUID("00000000-0000-4000-8000-000000000001")
 
 # DB connection (same as app)
 from app.core.database import engine
@@ -65,6 +69,17 @@ async def create_prerequisite_entities(db_session: AsyncSession, tax_year: int):
         db_session.add(match)
         await db_session.flush()
         match_ids.append(str(match.match_id))
+
+    ub = await db_session.get(UserBalance, SEED_USER_ID)
+    if ub is None:
+        db_session.add(
+            UserBalance(
+                user_id=SEED_USER_ID,
+                available_balance=Decimal("100000.00"),
+                locked_balance=Decimal("0"),
+            )
+        )
+        print(f"✅ Seed wallet row created for user_id={SEED_USER_ID}")
 
     await db_session.commit()
     print(f"✅ Committed Sport, Competition, and {len(match_ids)} matches to DB")
@@ -138,6 +153,7 @@ async def seed():
         for p_data in picks:
             status = p_data.pop("status")
             payload = {
+                "user_id": str(SEED_USER_ID),
                 "match_id": str(p_data["match_id"]),
                 "sportsbook_id": str(p_data["sportsbook_id"]),
                 "market": p_data["market"],

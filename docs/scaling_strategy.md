@@ -5,6 +5,24 @@
 
 ---
 
+## Financial Integrity Rules (LOCKED)
+
+These rules govern all monetary state in BetSync. They are **normative** for application and database design; exceptions require Principal Architect sign-off and an RFC.
+
+1. **NO LEDGER, NO MONEY:** No mutation of economic value exists outside a **Ledger Entry**. Deposits, locks, releases, settlements, and corrections are expressed only as append-only ledger rows (plus explicit balance cache updates in the same transaction).
+
+2. **SERIALIZED WRITES:** Every financial operation **must** begin with **`SELECT … FOR UPDATE`** on the user’s **`user_balances`** row (the lockable balance cache). No other row may be the primary serialization point for wallet mutations.
+
+3. **ATOMIC TRANSACTIONS:** The domain fact (e.g. a **Pick**) and its accounting (**Ledger** row(s), balance cache update, **Outbox** event when used) **must** occur in the **same** database transaction.
+
+4. **IMMUTABILITY:** **Ledger** rows are read-only after insert. Mistakes are corrected only via **Reversal** (or compensating) ledger entries, never by `UPDATE`/`DELETE` on original entries.
+
+5. **SOURCE OF TRUTH:** The authoritative balance is the **sum of the Ledger** over time; **`available_balance` / `locked_balance`** on **`user_balances`** are a **lockable cache** maintained in lockstep with each ledger append. Application code **must not** compute or assert balances from ledger sums **without** holding **`FOR UPDATE`** on **`user_balances`** in the same transaction as any decision that depends on that balance.
+
+**Corollary (operational):** Computing saldos in the application without **`FOR UPDATE`** on **`user_balances`** is **prohibited** for any path that authorizes or records a financial movement.
+
+---
+
 ## DECISION-001: Aggregation Strategy (LOCKED)
 
 ### Statement

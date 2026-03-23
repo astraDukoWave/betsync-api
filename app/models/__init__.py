@@ -8,6 +8,9 @@ from app.models.parlay import Parlay, ParlayStatus, ParlayType
 from app.models.parlay_pick import ParlayPick
 from app.models.config import SystemConfig
 from app.models.transaction import Transaction, TransactionType, TransactionCurrency
+from app.models.balance import UserBalance
+from app.models.ledger import LedgerEntry, LedgerEntryType
+from app.models.outbox import OutboxEvent
 
 __all__ = [
     "Sport",
@@ -29,4 +32,8 @@ __all__ = [
     "Transaction",
     "TransactionType",
     "TransactionCurrency",
+    "UserBalance",
+    "LedgerEntry",
+    "LedgerEntryType",
+    "OutboxEvent",
 ]

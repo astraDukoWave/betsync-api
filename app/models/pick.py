@@ -41,6 +41,9 @@ class Pick(Base):
     __tablename__ = "picks"
 
     pick_id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        ForeignKey("user_balances.user_id"), nullable=True, index=True
+    )
     match_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("matches.match_id"), nullable=False
     )

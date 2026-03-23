@@ -11,6 +11,7 @@ from app.models.pick import PickGrade, PickSource, PickStatus
 class PickCreate(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    user_id: Optional[UUID] = None
     match_id: UUID
     sportsbook_id: UUID
     market: str
@@ -60,6 +61,7 @@ class PickConfirm(BaseModel):
 
 class PickResponse(BaseModel):
     pick_id: UUID
+    user_id: Optional[UUID] = None
     match_id: UUID
     sportsbook_id: UUID
     run_date: date

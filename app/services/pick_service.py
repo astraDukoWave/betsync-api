@@ -1,4 +1,5 @@
 import logging
+import uuid
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
@@ -9,9 +10,12 @@ from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import settings
 from app.core.exceptions import NotFoundError, ConflictError, BadRequestError, UnprocessableError
+from app.models.ledger import LedgerEntryType
+from app.models.outbox import OutboxEvent
 from app.models.pick import Pick, PickStatus, PickGrade, PickSource
 from app.models.parlay_pick import ParlayPick
 from app.schemas.pick import PickCreate, PickUpdate, PickResolve, PickConfirm
+from app.services.ledger_service import record_movement
 from app.worker.pipeline.calculator import american_to_decimal, calc_implied_prob, calc_clv
 from app.worker.tasks import enqueue_recompute_aggregates_for_day
 
@@ -290,7 +294,11 @@ async def create_pick(db: AsyncSession, data: PickCreate) -> Pick:
     imp_prob = calc_implied_prob(odds_dec)
     grade = data.grade if data.grade is not None else classify_grade(imp_prob)
 
+    pick_id = uuid.uuid4()
+    staked = data.stake is not None and data.stake > 0
     pick = Pick(
+        pick_id=pick_id,
+        user_id=data.user_id if staked else None,
         match_id=data.match_id,
         sportsbook_id=data.sportsbook_id,
         run_date=date.today(),
@@ -305,9 +313,38 @@ async def create_pick(db: AsyncSession, data: PickCreate) -> Pick:
         source=data.source,
     )
     DomainValidator.validate(pick, None, profit_tolerance=settings.pick_profit_tolerance)
-    db.add(pick)
-    await db.flush()
-    await db.refresh(pick)
+
+    if staked:
+        if data.user_id is None:
+            raise BadRequestError(
+                "USER_ID_REQUIRED_FOR_STAKED_PICK",
+                "user_id is required when stake is set",
+            )
+        async with db.begin():
+            await record_movement(
+                db,
+                data.user_id,
+                data.stake,
+                LedgerEntryType.PICK_STAKE_LOCK,
+                pick_id,
+            )
+            db.add(pick)
+            db.add(
+                OutboxEvent(
+                    event_type="pick.created",
+                    payload={
+                        "pick_id": str(pick_id),
+                        "user_id": str(data.user_id),
+                        "stake": str(data.stake),
+                    },
+                )
+            )
+        await db.refresh(pick)
+    else:
+        db.add(pick)
+        await db.flush()
+        await db.refresh(pick)
+
     logger.info("Pick created: %s | %s @ %s", pick.pick_id, data.selection, odds_dec)
     enqueue_recompute_aggregates_for_day(pick.run_date)
     return pick
