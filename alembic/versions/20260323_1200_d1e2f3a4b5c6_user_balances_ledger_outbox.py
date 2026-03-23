@@ -24,8 +24,15 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    ledger_entry_type = sa.Enum("PICK_STAKE_LOCK", name="ledger_entry_type")
-    ledger_entry_type.create(op.get_bind(), checkfirst=True)
+    # Create ENUM type via raw SQL to avoid asyncpg checkfirst bug
+    op.execute("""
+        DO $$
+        BEGIN
+            IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = 'ledger_entry_type') THEN
+                CREATE TYPE ledger_entry_type AS ENUM ('PICK_STAKE_LOCK');
+            END IF;
+        END$$;
+    """)
 
     op.create_table(
         "user_balances",
@@ -51,29 +58,19 @@ def upgrade() -> None:
         sa.PrimaryKeyConstraint("user_id"),
     )
 
-    op.create_table(
-        "ledger_entries",
-        sa.Column("ledger_entry_id", postgresql.UUID(as_uuid=True), nullable=False),
-        sa.Column("user_id", postgresql.UUID(as_uuid=True), nullable=False),
-        sa.Column("amount", sa.Numeric(15, 2), nullable=False),
-        sa.Column("type", ledger_entry_type, nullable=False),
-        sa.Column("reference_id", postgresql.UUID(as_uuid=True), nullable=True),
-        sa.Column("balance_after", sa.Numeric(15, 2), nullable=False),
-        sa.Column("locked_after", sa.Numeric(15, 2), nullable=False),
-        sa.Column(
-            "created_at",
-            sa.DateTime(timezone=True),
-            server_default=sa.text("now()"),
-            nullable=False,
-        ),
-        sa.ForeignKeyConstraint(
-            ["user_id"],
-            ["user_balances.user_id"],
-            name="fk_ledger_entries_user_id_user_balances",
-            ondelete="RESTRICT",
-        ),
-        sa.PrimaryKeyConstraint("ledger_entry_id"),
-    )
+    # Create ledger_entries table with ENUM column defined via raw SQL type
+    op.execute("""
+        CREATE TABLE ledger_entries (
+            ledger_entry_id UUID PRIMARY KEY,
+            user_id UUID NOT NULL REFERENCES user_balances(user_id) ON DELETE RESTRICT,
+            amount NUMERIC(15, 2) NOT NULL,
+            type ledger_entry_type NOT NULL,
+            reference_id UUID,
+            balance_after NUMERIC(15, 2) NOT NULL,
+            locked_after NUMERIC(15, 2) NOT NULL,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+        )
+    """)
     op.create_index(
         op.f("ix_ledger_entries_user_id"),
         "ledger_entries",
