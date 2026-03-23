@@ -19,15 +19,15 @@ _IDEM_PREFIX = "idem:v1:picks:create"
 
 @dataclass(frozen=True)
 class IdempotencyProceed:
-    kind: Literal["proceed"] = "proceed"
     redis_key: str
+    kind: Literal["proceed"] = "proceed"
 
 
 @dataclass(frozen=True)
 class IdempotencyCached:
-    kind: Literal["cached"] = "cached"
     status_code: int
     body: dict[str, Any]
+    kind: Literal["cached"] = "cached"
 
 
 @dataclass(frozen=True)
