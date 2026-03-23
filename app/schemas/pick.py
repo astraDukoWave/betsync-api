@@ -9,6 +9,8 @@ from app.models.pick import PickGrade, PickSource, PickStatus
 
 
 class PickCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     match_id: UUID
     sportsbook_id: UUID
     market: str
@@ -26,6 +28,8 @@ class PickCreate(BaseModel):
 
 
 class PickUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     market: Optional[str] = None
     selection: Optional[str] = None
     odds_american: Optional[int] = None

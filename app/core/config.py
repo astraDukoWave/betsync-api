@@ -33,6 +33,10 @@ class Settings(BaseSettings):
     odds_api_retry_attempts: int = 5
     operational_metrics_enabled: bool = True
 
+    # POST /picks idempotency (Redis NX lock + cached response body).
+    idempotency_processing_ttl_seconds: int = 120
+    idempotency_result_ttl_seconds: int = 1800
+
     model_config = SettingsConfigDict(
         env_file=".env", case_sensitive=False, extra="ignore",
     )

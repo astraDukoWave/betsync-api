@@ -1,6 +1,6 @@
 import logging
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Optional
 from uuid import UUID
@@ -35,6 +35,8 @@ class PickPersistSnapshot:
     odds_decimal: Decimal
     profit: Optional[Decimal]
     settled_return: Optional[Decimal]
+    resolved_at: Optional[datetime]
+    market: str
 
 
 def pick_persist_snapshot(pick: Pick) -> PickPersistSnapshot:
@@ -45,11 +47,28 @@ def pick_persist_snapshot(pick: Pick) -> PickPersistSnapshot:
         odds_decimal=pick.odds_decimal,
         profit=pick.profit,
         settled_return=pick.settled_return,
+        resolved_at=pick.resolved_at,
+        market=pick.market,
     )
 
 
 class DomainValidator:
     """Enforces financial and lifecycle invariants before any Pick reaches the database."""
+
+    @staticmethod
+    def _assert_utc_timestamp(field: str, dt: datetime) -> None:
+        if dt.tzinfo is None:
+            raise UnprocessableError(
+                "DOMAIN_TIMESTAMP_NOT_UTC",
+                f"{field} must be timezone-aware (UTC)",
+                meta={"field": field},
+            )
+        if dt.utcoffset() != timedelta(0):
+            raise UnprocessableError(
+                "DOMAIN_TIMESTAMP_NOT_UTC",
+                f"{field} must use UTC offset (got {dt.utcoffset()})",
+                meta={"field": field},
+            )
 
     @staticmethod
     def _expected_profit(
@@ -77,6 +96,42 @@ class DomainValidator:
         *,
         profit_tolerance: Decimal,
     ) -> None:
+        for label, ts in (
+            ("created_at", pick.created_at),
+            ("updated_at", pick.updated_at),
+            ("resolved_at", pick.resolved_at),
+            ("confirmed_at", pick.confirmed_at),
+        ):
+            if ts is not None:
+                cls._assert_utc_timestamp(label, ts)
+
+        if pick.status in _TERMINAL_STATUSES and pick.resolved_at is None:
+            raise UnprocessableError(
+                "DOMAIN_TERMINAL_REQUIRES_RESOLVED_AT",
+                "Terminal statuses require resolved_at",
+                meta={"status": pick.status.value},
+            )
+        if pick.status == PickStatus.pending and pick.resolved_at is not None:
+            raise UnprocessableError(
+                "DOMAIN_PENDING_REQUIRES_NO_RESOLVED_AT",
+                "Pending picks must not have resolved_at",
+            )
+
+        if (
+            pick.resolved_at is not None
+            and pick.created_at is not None
+            and pick.resolved_at.astimezone(timezone.utc)
+            < pick.created_at.astimezone(timezone.utc)
+        ):
+            raise UnprocessableError(
+                "DOMAIN_RESOLVED_BEFORE_CREATED",
+                "resolved_at must be greater than or equal to created_at",
+                meta={
+                    "resolved_at": pick.resolved_at.isoformat(),
+                    "created_at": pick.created_at.isoformat(),
+                },
+            )
+
         if pick.stake is not None and pick.stake <= 0:
             raise UnprocessableError(
                 "DOMAIN_STAKE_INVALID",
@@ -85,6 +140,28 @@ class DomainValidator:
             )
 
         if prior is not None:
+            if prior.resolved_at is not None:
+                if pick.stake != prior.stake:
+                    raise UnprocessableError(
+                        "DOMAIN_STAKE_IMMUTABLE",
+                        "Cannot change stake after the pick has resolved_at set",
+                    )
+                if pick.odds_american != prior.odds_american:
+                    raise UnprocessableError(
+                        "DOMAIN_ODDS_IMMUTABLE",
+                        "Cannot change odds after the pick has resolved_at set",
+                    )
+                if pick.odds_decimal != prior.odds_decimal:
+                    raise UnprocessableError(
+                        "DOMAIN_ODDS_IMMUTABLE",
+                        "Cannot change odds_decimal after the pick has resolved_at set",
+                    )
+                if pick.market != prior.market:
+                    raise UnprocessableError(
+                        "DOMAIN_MARKET_IMMUTABLE",
+                        "Cannot change market after the pick has resolved_at set",
+                    )
+
             if prior.status in _TERMINAL_STATUSES:
                 if pick.status != prior.status:
                     raise UnprocessableError(
@@ -109,6 +186,11 @@ class DomainValidator:
                     raise UnprocessableError(
                         "DOMAIN_ODDS_IMMUTABLE",
                         "Cannot change odds_decimal after resolution",
+                    )
+                if pick.market != prior.market:
+                    raise UnprocessableError(
+                        "DOMAIN_MARKET_IMMUTABLE",
+                        "Cannot change market after resolution",
                     )
             elif prior.status != pick.status:
                 if prior.status != PickStatus.pending:
@@ -323,7 +405,7 @@ async def resolve_pick(db: AsyncSession, pick_id: UUID, data: PickResolve) -> Pi
     prior = pick_persist_snapshot(pick)
 
     pick.status = data.status
-    pick.resolved_at = datetime.utcnow()
+    pick.resolved_at = datetime.now(timezone.utc)
     pick.settled_return, pick.profit = _settlement_for_status(
         data.status, pick.stake, pick.odds_decimal
     )
@@ -365,7 +447,7 @@ async def delete_pick(db: AsyncSession, pick_id: UUID) -> Pick:
 
     prior = pick_persist_snapshot(pick)
     pick.status = PickStatus.void
-    pick.resolved_at = datetime.utcnow()
+    pick.resolved_at = datetime.now(timezone.utc)
     pick.settled_return, pick.profit = _settlement_for_status(
         PickStatus.void, pick.stake, pick.odds_decimal
     )
@@ -391,10 +473,10 @@ async def confirm_pick(db: AsyncSession, pick_id: UUID, data: PickConfirm) -> Pi
     prior = pick_persist_snapshot(pick)
 
     if data.confirmed:
-        pick.confirmed_at = datetime.utcnow()
+        pick.confirmed_at = datetime.now(timezone.utc)
     else:
         pick.status = PickStatus.void
-        pick.resolved_at = datetime.utcnow()
+        pick.resolved_at = datetime.now(timezone.utc)
         pick.settled_return, pick.profit = _settlement_for_status(
             PickStatus.void, pick.stake, pick.odds_decimal
         )

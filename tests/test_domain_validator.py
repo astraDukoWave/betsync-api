@@ -3,7 +3,7 @@
 Run in Docker (recommended): docker compose run --rm api pytest tests/test_domain_validator.py -q
 """
 
-from datetime import date
+from datetime import date, datetime, timezone
 from decimal import Decimal
 from uuid import uuid4
 
@@ -14,7 +14,18 @@ from app.models.pick import Pick, PickGrade, PickSource, PickStatus
 from app.services.pick_service import DomainValidator, PickPersistSnapshot
 
 
+_TERMINAL = frozenset(
+    {
+        PickStatus.won,
+        PickStatus.lost,
+        PickStatus.push,
+        PickStatus.void,
+    }
+)
+
+
 def _pending_pick(**kwargs) -> Pick:
+    created_at = kwargs.get("created_at") or datetime(2026, 1, 15, 12, 0, 0, tzinfo=timezone.utc)
     defaults = dict(
         match_id=uuid4(),
         sportsbook_id=uuid4(),
@@ -28,8 +39,12 @@ def _pending_pick(**kwargs) -> Pick:
         stake=Decimal("10.00"),
         status=PickStatus.pending,
         source=PickSource.manual,
+        created_at=created_at,
+        resolved_at=None,
     )
     defaults.update(kwargs)
+    if defaults["status"] in _TERMINAL and defaults.get("resolved_at") is None:
+        defaults["resolved_at"] = defaults["created_at"]
     return Pick(**defaults)
 
 
@@ -57,6 +72,7 @@ def test_void_requires_zero_profit():
         status=PickStatus.void,
         profit=Decimal("1"),
         settled_return=Decimal("10"),
+        resolved_at=datetime(2026, 1, 15, 14, 0, 0, tzinfo=timezone.utc),
     )
     with pytest.raises(UnprocessableError) as ei:
         DomainValidator.validate(p, None, profit_tolerance=Decimal("0.02"))
@@ -72,6 +88,7 @@ def test_won_profit_within_tolerance():
         odds_decimal=odds,
         profit=stake * odds - stake,
         settled_return=stake * odds,
+        resolved_at=datetime(2026, 1, 15, 14, 0, 0, tzinfo=timezone.utc),
     )
     DomainValidator.validate(p, None, profit_tolerance=Decimal("0.02"))
 
@@ -85,6 +102,7 @@ def test_won_profit_outside_tolerance():
         odds_decimal=odds,
         profit=Decimal("50.00"),
         settled_return=Decimal("60.00"),
+        resolved_at=datetime(2026, 1, 15, 14, 0, 0, tzinfo=timezone.utc),
     )
     with pytest.raises(UnprocessableError) as ei:
         DomainValidator.validate(p, None, profit_tolerance=Decimal("0.02"))
@@ -92,6 +110,7 @@ def test_won_profit_outside_tolerance():
 
 
 def test_terminal_odds_immutable():
+    r = datetime(2026, 1, 15, 14, 0, 0, tzinfo=timezone.utc)
     prior = PickPersistSnapshot(
         status=PickStatus.won,
         stake=Decimal("10"),
@@ -99,6 +118,8 @@ def test_terminal_odds_immutable():
         odds_decimal=Decimal("1.9091"),
         profit=Decimal("9.09"),
         settled_return=Decimal("19.09"),
+        resolved_at=r,
+        market="h2h",
     )
     p = _pending_pick(
         status=PickStatus.won,
@@ -107,6 +128,7 @@ def test_terminal_odds_immutable():
         odds_decimal=Decimal("1.9091"),
         profit=Decimal("9.09"),
         settled_return=Decimal("19.09"),
+        resolved_at=r,
     )
     with pytest.raises(UnprocessableError) as ei:
         DomainValidator.validate(p, prior, profit_tolerance=Decimal("0.02"))
@@ -114,6 +136,7 @@ def test_terminal_odds_immutable():
 
 
 def test_invalid_transition_won_to_pending():
+    r = datetime(2026, 1, 15, 14, 0, 0, tzinfo=timezone.utc)
     prior = PickPersistSnapshot(
         status=PickStatus.won,
         stake=Decimal("10"),
@@ -121,6 +144,8 @@ def test_invalid_transition_won_to_pending():
         odds_decimal=Decimal("1.9091"),
         profit=Decimal("9.09"),
         settled_return=Decimal("19.09"),
+        resolved_at=r,
+        market="h2h",
     )
     p = _pending_pick(
         status=PickStatus.pending,

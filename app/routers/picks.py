@@ -2,11 +2,19 @@ from datetime import date
 from typing import Optional
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, Header, Request, status
+from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 import redis.asyncio as aioredis
 
 from app.core.dependencies import get_db, get_redis
+from app.core.exceptions import ConflictError
+from app.core.idempotency import (
+    abort_pick_create_if_processing,
+    begin_pick_create,
+    complete_pick_create,
+    pick_create_body_fingerprint,
+)
 from app.models.pick import PickGrade, PickSource, PickStatus
 from app.schemas.pick import (
     PickCreate, PickUpdate, PickResolve, PickConfirm,
@@ -20,13 +28,60 @@ router = APIRouter(prefix="/picks")
 
 @router.post("/", response_model=PickResponse, status_code=status.HTTP_201_CREATED)
 async def create_pick(
+    request: Request,
     data: PickCreate,
     db: AsyncSession = Depends(get_db),
     redis: aioredis.Redis = Depends(get_redis),
+    idempotency_key: Optional[str] = Header(default=None, alias="Idempotency-Key"),
 ):
-    pick = await pick_service.create_pick(db, data)
-    await invalidate_dashboard_cache(redis)
-    return pick
+    redis_key: Optional[str] = None
+    fingerprint: Optional[str] = None
+
+    if idempotency_key:
+        fingerprint = pick_create_body_fingerprint(data)
+        outcome = await begin_pick_create(redis, idempotency_key, fingerprint)
+        if outcome.kind == "cached":
+            return JSONResponse(
+                status_code=outcome.status_code,
+                content=outcome.body,
+            )
+        if outcome.kind == "conflict_processing":
+            raise ConflictError(
+                "IDEMPOTENCY_IN_PROGRESS",
+                "An identical request is still being processed for this idempotency key",
+            )
+        if outcome.kind == "conflict_mismatch":
+            raise ConflictError(
+                "IDEMPOTENCY_BODY_MISMATCH",
+                "Idempotency-Key was already used with a different request body",
+            )
+        redis_key = outcome.redis_key
+
+    try:
+        pick = await pick_service.create_pick(db, data)
+        await invalidate_dashboard_cache(redis)
+        if idempotency_key and redis_key and fingerprint is not None:
+            payload = PickResponse.model_validate(pick).model_dump(mode="json")
+
+            async def _store_idempotent_result() -> None:
+                await complete_pick_create(
+                    redis,
+                    redis_key,
+                    fingerprint,
+                    status.HTTP_201_CREATED,
+                    payload,
+                )
+
+            hooks = getattr(request.state, "post_commit_hooks", None)
+            if hooks is None:
+                request.state.post_commit_hooks = [_store_idempotent_result]
+            else:
+                hooks.append(_store_idempotent_result)
+        return pick
+    except Exception:
+        if redis_key is not None:
+            await abort_pick_create_if_processing(redis, redis_key)
+        raise
 
 
 @router.get("/", response_model=PickListResponse)

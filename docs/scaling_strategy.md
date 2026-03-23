@@ -196,12 +196,24 @@ These rules apply to **all** `Pick` persistence paths (REST services **and** the
 ### Lifecycle and immutability
 
 1. **Terminal statuses:** `won`, `lost`, `push`, and `void` are terminal. Status MUST NOT change after resolution.
-2. **No retroactive price edits:** After resolution, `stake`, `odds_american`, and `odds_decimal` MUST NOT change.
+2. **No retroactive price edits:** After resolution, `stake`, `odds_american`, `odds_decimal`, and `market` MUST NOT change.
 3. **Valid transitions:** From `pending`, only transitions to `won`, `lost`, `push`, or `void` are allowed (e.g. never `won` → `pending`).
 
 ### RAW path as last resort
 
 Aggregate reads may fall back to RAW `picks` when runtime safeguards fire (see above). Domain validation is independent: even when reads use RAW, **writes** still pass through the same `DomainValidator` so invalid money never lands in `picks`.
+
+---
+
+## API Integrity Rules
+
+These rules define the **public HTTP contract** for pick writes and complement `DomainValidator` (domain layer).
+
+1. **`extra="forbid"` on input schemas:** `PickCreate` and `PickUpdate` use Pydantic `model_config = ConfigDict(extra="forbid")`. Any field not declared on the schema — including system-controlled attributes such as `profit`, `settled_return`, or `odds_decimal` on create — MUST be rejected with **422** (no silent stripping).
+
+2. **Atomic idempotency for `POST /api/v1/picks/`:** When the client sends `Idempotency-Key`, the API acquires a short-lived exclusive lock in Redis via **`SET` with `NX`**, stores `"processing"` with a brief TTL, and after a **successful DB commit** persists the response JSON plus HTTP status under the same key for **30 minutes** (`IDEMPOTENCY_RESULT_TTL_SECONDS`, overridable via env). Concurrent retries: if the key still holds `"processing"`, respond **409**; if the key holds a completed payload, replay that response; if the same key is reused with a different canonical body fingerprint, respond **409** (`IDEMPOTENCY_BODY_MISMATCH`). Requests **without** `Idempotency-Key` are processed normally (no Redis deduplication).
+
+3. **Temporal invariants (UTC):** All persisted pick timestamps exposed to validation (`created_at`, `updated_at`, `resolved_at`, `confirmed_at` when set) MUST be timezone-aware with **UTC offset zero**. `resolved_at` MUST be `>= created_at`. **Terminal** statuses (`won`, `lost`, `push`, `void`) MUST have `resolved_at` set; **`pending`** MUST have `resolved_at` NULL. Once `resolved_at` is set, **`stake`**, **odds** (American and decimal), and **`market`** MUST NOT change.
 
 ---
 
