@@ -66,7 +66,7 @@ async def execute_settlement(
         )
 
     try:
-        async with db.begin():
+        async with db.begin_nested():
             result = await db.execute(
                 select(Pick).where(Pick.pick_id == pick_id).with_for_update()
             )

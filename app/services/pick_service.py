@@ -325,7 +325,7 @@ async def create_pick(db: AsyncSession, data: PickCreate) -> Pick:
                 "USER_ID_REQUIRED_FOR_STAKED_PICK",
                 "user_id is required when stake is set",
             )
-        async with db.begin():
+        async with db.begin_nested():
             await record_movement(
                 db,
                 data.user_id,
