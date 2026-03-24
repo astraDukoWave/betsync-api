@@ -11,6 +11,7 @@ from app.models.transaction import Transaction, TransactionType, TransactionCurr
 from app.models.balance import UserBalance
 from app.models.ledger import LedgerEntry, LedgerEntryType
 from app.models.outbox import OutboxEvent
+from app.models.reconciliation_audit import ReconciliationAudit
 
 __all__ = [
     "Sport",
@@ -36,4 +37,5 @@ __all__ = [
     "LedgerEntry",
     "LedgerEntryType",
     "OutboxEvent",
+    "ReconciliationAudit",
 ]

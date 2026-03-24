@@ -13,6 +13,7 @@ from app.models import (  # noqa: F401
     Pick, Parlay, ParlayPick, SystemConfig,
     AggPickDaily, AggPickDimensionDaily,
     UserBalance, LedgerEntry, OutboxEvent,
+    ReconciliationAudit,
 )
 
 config = context.config

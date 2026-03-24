@@ -33,6 +33,9 @@ class Settings(BaseSettings):
     odds_api_retry_attempts: int = 5
     operational_metrics_enabled: bool = True
 
+    # POST /api/v1/admin/reconciliation/run — required shared secret (header X-Reconciliation-Secret).
+    admin_reconciliation_secret: str = ""
+
     # POST /picks idempotency (Redis NX lock + cached response body).
     idempotency_processing_ttl_seconds: int = 120
     idempotency_result_ttl_seconds: int = 1800
