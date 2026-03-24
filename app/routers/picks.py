@@ -44,6 +44,10 @@ async def create_pick(
             return JSONResponse(
                 status_code=outcome.status_code,
                 content=outcome.body,
+                headers={
+                    "X-Idempotent-Replay": "true",
+                    "X-Idempotency-Key": outcome.idempotency_key,
+                },
             )
         if outcome.kind == "conflict_processing":
             raise ConflictError(
@@ -77,7 +81,14 @@ async def create_pick(
                 request.state.post_commit_hooks = [_store_idempotent_result]
             else:
                 hooks.append(_store_idempotent_result)
-        return pick
+        headers = {"X-Idempotent-Replay": "false"}
+        if idempotency_key:
+            headers["X-Idempotency-Key"] = idempotency_key
+        return JSONResponse(
+            status_code=status.HTTP_201_CREATED,
+            content=PickResponse.model_validate(pick).model_dump(mode="json"),
+            headers=headers,
+        )
     except Exception:
         if redis_key is not None:
             await abort_pick_create_if_processing(redis, redis_key)

@@ -23,6 +23,23 @@ These rules govern all monetary state in BetSync. They are **normative** for app
 
 ---
 
+## Settlement Engine Rules (LOCKED)
+
+Phase **6.2.1 v2** — single writer for terminal `Pick` transitions (`won`, `lost`, `push`, `void`). **No service or router may assign a terminal `Pick` status, `resolved_at`, or settlement fields except through** `app.services.settlement_engine.execute_settlement`.
+
+### Contract
+
+1. **Entry point:** `async def execute_settlement(db, pick_id, target_status: PickStatus, *, idempotency_key: str | None = None, closing_odds_decimal: Decimal | None = None)`.
+2. **Deterministic lock order:** **`SELECT picks … FOR UPDATE` first** (serialization on the pick row). **`lock_and_get_balance` second** when the pick is financial (`user_id`, `stake > 0`). Balance work stays in the same DB transaction as the pick and ledger/outbox writes.
+3. **State idempotency:** If `pick.status == target_status`, return success (**NO-OP**). If `pick.status` is already terminal and **not** equal to `target_status`, raise **`ConflictError("TERMINAL_STATE_CONFLICT")`**.
+4. **Resolve over void:** Outcomes **`won` / `lost` / `push` take precedence over void.** If `target_status == void` and a **`PICK_PAYOUT`** or **`PICK_LOSS`** ledger row already exists for that `pick_id`, raise **`ConflictError("SETTLEMENT_ALREADY_DECIDED")`** (void cannot override a resolved monetary outcome).
+5. **Race / uniqueness:** On PostgreSQL **unique violation** (`23505`) during the settlement transaction (e.g. concurrent ledger or outbox dedupe), raise **`ConflictError("SETTLEMENT_RACE_CONDITION")`**.
+6. **Callers:** `resolve_pick`, `delete_pick` (void), and `confirm_pick` (reject → void) delegate terminal transitions to `execute_settlement`. Unstaked “soft delete” remains a void transition **without** balance movement, still executed inside the engine.
+
+**Note:** For settlement specifically, the pick row is the primary **ordering** lock; the balance row is still updated under **`FOR UPDATE`** in the same transaction before any wallet mutation, preserving financial invariants (§ Financial Integrity Rules).
+
+---
+
 ## DECISION-001: Aggregation Strategy (LOCKED)
 
 ### Statement

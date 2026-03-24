@@ -31,6 +31,7 @@ class IdempotencyProceed:
 class IdempotencyCached:
     status_code: int
     body: dict[str, Any]
+    idempotency_key: str
     kind: Literal["cached"] = "cached"
 
 
@@ -110,6 +111,7 @@ async def begin_pick_create(
         return IdempotencyCached(
             status_code=int(payload["status_code"]),
             body=payload["body"],
+            idempotency_key=idempotency_key,
         )
 
     except (RedisConnectionError, RedisTimeoutError) as e:
