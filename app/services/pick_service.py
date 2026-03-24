@@ -15,7 +15,13 @@ from app.models.outbox import OutboxEvent
 from app.models.pick import Pick, PickStatus, PickGrade, PickSource
 from app.models.parlay_pick import ParlayPick
 from app.schemas.pick import PickCreate, PickUpdate, PickResolve, PickConfirm
-from app.services.ledger_service import record_movement
+from app.services.ledger_service import (
+    lock_and_get_balance,
+    pick_created_outbox_event_key,
+    pick_settled_outbox_event_key,
+    record_movement,
+    record_settlement,
+)
 from app.worker.pipeline.calculator import american_to_decimal, calc_implied_prob, calc_clv
 from app.worker.tasks import enqueue_recompute_aggregates_for_day
 
@@ -332,6 +338,7 @@ async def create_pick(db: AsyncSession, data: PickCreate) -> Pick:
             db.add(
                 OutboxEvent(
                     event_type="pick.created",
+                    event_key=pick_created_outbox_event_key(pick_id),
                     payload={
                         "pick_id": str(pick_id),
                         "user_id": str(data.user_id),
@@ -431,33 +438,66 @@ async def update_pick(db: AsyncSession, pick_id: UUID, data: PickUpdate) -> Pick
 
 
 async def resolve_pick(db: AsyncSession, pick_id: UUID, data: PickResolve) -> Pick:
-    pick = await get_pick(db, pick_id)
-    if pick.status != PickStatus.pending:
-        raise ConflictError(
-            "PICK_ALREADY_RESOLVED",
-            "Pick already has a final status",
-            meta={"current_status": pick.status.value, "pick_id": str(pick_id)},
+    async with db.begin():
+        result = await db.execute(
+            select(Pick).where(Pick.pick_id == pick_id).with_for_update()
+        )
+        pick = result.scalar_one_or_none()
+        if not pick:
+            raise NotFoundError("PICK_NOT_FOUND", f"Pick {pick_id} not found")
+
+        if pick.status in _TERMINAL_STATUSES:
+            if pick.status == data.status:
+                return pick
+            raise ConflictError(
+                "PICK_ALREADY_RESOLVED",
+                "Pick already has a final status",
+                meta={"current_status": pick.status.value, "pick_id": str(pick_id)},
+            )
+
+        prior = pick_persist_snapshot(pick)
+
+        if data.closing_odds_decimal is not None:
+            pick.closing_odds_decimal = data.closing_odds_decimal
+            pick.clv = Decimal(
+                str(
+                    calc_clv(
+                        float(pick.odds_decimal),
+                        float(data.closing_odds_decimal),
+                    )
+                )
+            )
+
+        settlement_key = pick_settled_outbox_event_key(pick.pick_id, data.status)
+
+        user_balance = None
+        if (
+            pick.user_id is not None
+            and pick.stake is not None
+            and pick.stake > 0
+        ):
+            user_balance = await lock_and_get_balance(db, pick.user_id)
+
+        await record_settlement(
+            db,
+            pick,
+            data.status,
+            prior=prior,
+            user_balance=user_balance,
         )
 
-    prior = pick_persist_snapshot(pick)
-
-    pick.status = data.status
-    pick.resolved_at = datetime.now(timezone.utc)
-    pick.settled_return, pick.profit = _settlement_for_status(
-        data.status, pick.stake, pick.odds_decimal
-    )
-
-    if data.closing_odds_decimal is not None:
-        pick.closing_odds_decimal = data.closing_odds_decimal
-        pick.clv = Decimal(
-            str(calc_clv(float(pick.odds_decimal), float(data.closing_odds_decimal)))
+        db.add(
+            OutboxEvent(
+                event_type="pick.settled",
+                event_key=settlement_key,
+                payload={
+                    "pick_id": str(pick.pick_id),
+                    "user_id": str(pick.user_id) if pick.user_id else None,
+                    "status": data.status.value,
+                },
+            )
         )
 
-    DomainValidator.validate(
-        pick, prior, profit_tolerance=settings.pick_profit_tolerance
-    )
-
-    await db.flush()
     await db.refresh(pick)
     logger.info("Pick resolved: %s → %s", pick_id, data.status.value)
     enqueue_recompute_aggregates_for_day(pick.run_date)

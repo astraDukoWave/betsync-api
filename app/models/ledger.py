@@ -18,6 +18,9 @@ class LedgerEntryType(str, enum.Enum):
     """Append-only ledger line types. Extend with reversals/settlements as needed."""
 
     PICK_STAKE_LOCK = "PICK_STAKE_LOCK"
+    PICK_PAYOUT = "PICK_PAYOUT"
+    PICK_LOSS = "PICK_LOSS"
+    PICK_REFUND = "PICK_REFUND"
 
 
 class LedgerEntry(Base):

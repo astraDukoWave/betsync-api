@@ -17,6 +17,7 @@ class OutboxEvent(Base):
     outbox_event_id: Mapped[uuid.UUID] = mapped_column(
         Uuid, primary_key=True, default=uuid.uuid4
     )
+    event_key: Mapped[str] = mapped_column(String(128), nullable=False)
     event_type: Mapped[str] = mapped_column(String(100), nullable=False)
     payload: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False)
     processed_at: Mapped[Optional[datetime]] = mapped_column(
