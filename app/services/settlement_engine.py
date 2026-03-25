@@ -19,6 +19,7 @@ from app.services.ledger_service import (
     pick_settled_outbox_event_key,
     record_settlement,
 )
+from app.services.reconciliation_service import assert_financial_health
 
 logger = logging.getLogger(__name__)
 
@@ -123,6 +124,7 @@ async def execute_settlement(
                 and pick.stake > 0
             )
             if financial:
+                await assert_financial_health(db, pick.user_id)
                 user_balance = await lock_and_get_balance(db, pick.user_id)
 
             await record_settlement(

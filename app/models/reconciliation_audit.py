@@ -1,15 +1,17 @@
 import uuid
 from datetime import datetime
 from decimal import Decimal
+from typing import Any, Optional
 
 from sqlalchemy import DateTime, ForeignKey, Numeric, String, Uuid, func
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.database import Base
 
 
 class ReconciliationAudit(Base):
-    """Append-only audit rows for financial reconciliation anomalies (WARNING / CRITICAL only)."""
+    """Append-only audit rows for reconciliation anomalies and automated escrow repairs (FIXED)."""
 
     __tablename__ = "reconciliation_audits"
 
@@ -23,6 +25,7 @@ class ReconciliationAudit(Base):
     escrow_drift: Mapped[Decimal] = mapped_column(Numeric(15, 2), nullable=False)
     ledger_drift: Mapped[Decimal] = mapped_column(Numeric(15, 2), nullable=False)
     severity: Mapped[str] = mapped_column(String(16), nullable=False)
+    detail: Mapped[Optional[dict[str, Any]]] = mapped_column(JSONB, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),

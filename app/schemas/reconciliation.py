@@ -1,9 +1,24 @@
 from datetime import datetime
 from decimal import Decimal
-from typing import Literal
+from typing import Any, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
+
+
+class ReconciliationFixResponse(BaseModel):
+    user_id: UUID
+    drift_type_before: Literal[
+        "NONE",
+        "ESCROW_MISMATCH",
+        "LEDGER_MISMATCH",
+        "FULL_INCONSISTENT",
+    ]
+    repaired: bool
+    previous_available: Decimal
+    previous_locked: Decimal
+    new_available: Decimal
+    new_locked: Decimal
 
 
 class ReconciliationResultSchema(BaseModel):
@@ -36,6 +51,7 @@ class ReconciliationAuditRowSchema(BaseModel):
     escrow_drift: Decimal
     ledger_drift: Decimal
     severity: str
+    detail: dict[str, Any] | None = None
     created_at: datetime
 
 
