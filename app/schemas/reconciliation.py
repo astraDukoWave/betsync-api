@@ -57,3 +57,12 @@ class ReconciliationAuditRowSchema(BaseModel):
 
 class ReconciliationAnomaliesResponse(BaseModel):
     items: list[ReconciliationAuditRowSchema] = Field(default_factory=list)
+
+
+class FinancialHealthSummarySchema(BaseModel):
+    """Global reconciliation counts (read-only scan, no audit persistence)."""
+
+    total_users: int
+    ok_users: int
+    warning_users: int
+    critical_users: int

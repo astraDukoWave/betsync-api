@@ -6,11 +6,11 @@ import uuid
 from datetime import date
 from decimal import Decimal
 from typing import List, Optional, Tuple
+from uuid import UUID
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
-
+from app.core.exceptions import UnprocessableError
 from app.models.sportsbook import Sportsbook
 from app.models.transaction import Transaction, TransactionType
 from app.schemas.transaction import (
@@ -21,19 +21,19 @@ from app.schemas.transaction import (
     TransactionCreate,
     TransactionUpdate,
 )
+from app.services import reconciliation_service
+
+
+def _cashflow_type_needs_drift_gate(tx_type: TransactionType) -> bool:
+    return tx_type in (TransactionType.deposit, TransactionType.withdrawal)
 
 
 # ---------------------------------------------------------------------------
 # CRUD
 # ---------------------------------------------------------------------------
 
-async def create_transaction(
-    db: AsyncSession,
-    payload: TransactionCreate,
-) -> Transaction:
-    """Crea una transacción individual."""
+async def _persist_transaction(db: AsyncSession, payload: TransactionCreate) -> Transaction:
     data = payload.model_dump()
-    # Si tax_year no viene, inferirlo de transaction_date
     if data.get("tax_year") is None:
         data["tax_year"] = payload.transaction_date.year
     tx = Transaction(**data)
@@ -41,6 +41,16 @@ async def create_transaction(
     await db.commit()
     await db.refresh(tx)
     return tx
+
+
+async def create_transaction(
+    db: AsyncSession,
+    payload: TransactionCreate,
+) -> Transaction:
+    """Crea una transacción individual."""
+    if _cashflow_type_needs_drift_gate(payload.type):
+        await reconciliation_service.assert_no_critical_drift_system_wide(db)
+    return await _persist_transaction(db, payload)
 
 
 async def get_transaction(
@@ -135,6 +145,9 @@ async def bulk_create_transactions(
     Estrategia: intenta insertar cada item individualmente para poder
     reportar errores por índice sin abortar todo el lote.
     """
+    if any(_cashflow_type_needs_drift_gate(t.type) for t in payload.transactions):
+        await reconciliation_service.assert_no_critical_drift_system_wide(db)
+
     created = 0
     failed = 0
     errors: List[str] = []
@@ -239,3 +252,42 @@ async def get_cashflow_summary(
         net_cashflow_mxn=total_in - total_out,
         by_sportsbook=balances,
     )
+
+
+# ---------------------------------------------------------------------------
+# Cashflow futuro (wallet / dinero real): drift gate por usuario
+# ---------------------------------------------------------------------------
+
+
+async def process_deposit(
+    db: AsyncSession,
+    user_id: UUID,
+    payload: TransactionCreate,
+) -> Transaction:
+    """Registra un depósito solo si el sistema y el usuario pasan el drift gate."""
+    if payload.type != TransactionType.deposit:
+        raise UnprocessableError(
+            "CASHFLOW_TYPE_MISMATCH",
+            "process_deposit requires TransactionCreate.type == deposit",
+            meta={"got": payload.type.value},
+        )
+    await reconciliation_service.assert_no_critical_drift_system_wide(db)
+    await reconciliation_service.assert_financial_health(db, user_id)
+    return await _persist_transaction(db, payload)
+
+
+async def process_withdrawal(
+    db: AsyncSession,
+    user_id: UUID,
+    payload: TransactionCreate,
+) -> Transaction:
+    """Registra un retiro solo si el sistema y el usuario pasan el drift gate."""
+    if payload.type != TransactionType.withdrawal:
+        raise UnprocessableError(
+            "CASHFLOW_TYPE_MISMATCH",
+            "process_withdrawal requires TransactionCreate.type == withdrawal",
+            meta={"got": payload.type.value},
+        )
+    await reconciliation_service.assert_no_critical_drift_system_wide(db)
+    await reconciliation_service.assert_financial_health(db, user_id)
+    return await _persist_transaction(db, payload)

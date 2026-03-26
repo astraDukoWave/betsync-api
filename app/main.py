@@ -17,6 +17,7 @@ from app.routers import (
     transactions,
     fiscal,
     reconciliation_admin,
+    financial_health_admin,
 )
 
 
@@ -55,6 +56,11 @@ def create_app() -> FastAPI:
         reconciliation_admin.router,
         prefix="/api/v1",
         tags=["admin-reconciliation"],
+    )
+    app.include_router(
+        financial_health_admin.router,
+        prefix="/api/v1",
+        tags=["admin-financial-health"],
     )
     return app
 

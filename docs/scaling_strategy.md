@@ -1,7 +1,15 @@
 # BetSync Scaling Strategy
 
 > **Status:** LOCKED — Changes require Principal Architect sign-off and RFC process.
-> **Last updated:** 2026-03-20
+> **Last updated:** 2026-03-26
+
+---
+
+## Pre-cashflow lock (Phase 6.2.4)
+
+**PRE-CASHFLOW LOCK:** Ninguna operación de depósito/retiro se permite si existe drift **CRITICAL** en cualquier cartera (`user_balances` / cola de ledger). El sistema debe estar en estado **OK** a nivel global (cero usuarios en CRITICAL) antes de habilitar cashflow real. Las reparaciones de **ledger mismatch** son exclusivamente manuales y auditables; `fix_user_balance` solo corrige desalineación de escrow cuando el ledger sigue cuadrando con la fila de saldo.
+
+**Usuario semilla operativo** (`00000000-0000-4000-8000-000000000001`): tras corregir a mano cualquier **LEDGER_MISMATCH**, ejecutar `POST /api/v1/admin/reconciliation/{user_id}/fix` (cabecera `X-Reconciliation-Secret`) y comprobar con reconciliación por usuario que `escrow_drift` y `ledger_drift` quedan en **0.00**.
 
 ---
 

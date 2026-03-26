@@ -75,6 +75,16 @@ class ReconciliationSummary:
     duration_seconds: float
 
 
+@dataclass(frozen=True)
+class FinancialHealthSummary:
+    """Read-only reconciliation counts (no reconciliation_audit rows)."""
+
+    total_users: int
+    ok_users: int
+    warning_users: int
+    critical_users: int
+
+
 def _classify_severity(escrow_drift: Decimal, ledger_drift: Decimal) -> ReconciliationSeverity:
     if ledger_drift > TOLERANCE:
         return "CRITICAL"
@@ -136,6 +146,58 @@ async def assert_financial_health(db: AsyncSession, user_id: UUID) -> None:
             "[DRIFT_GATE] user_id=%s escrow_drift=%s (ledger OK); proceeding",
             user_id,
             result.escrow_drift,
+        )
+
+
+async def summarize_financial_health(
+    db: AsyncSession,
+    *,
+    batch_size: int = 500,
+) -> FinancialHealthSummary:
+    """Count reconciliation severities across all wallets without writing audit rows."""
+    total_users = 0
+    ok_users = 0
+    warning_users = 0
+    critical_users = 0
+    last_user_id: UUID | None = None
+
+    while True:
+        q = select(UserBalance.user_id).order_by(UserBalance.user_id.asc()).limit(batch_size)
+        if last_user_id is not None:
+            q = q.where(UserBalance.user_id > last_user_id)
+
+        batch_ids: Sequence[UUID] = (await db.execute(q)).scalars().all()
+        if not batch_ids:
+            break
+
+        for uid in batch_ids:
+            total_users += 1
+            result = await reconcile_user(db, uid)
+            if result.severity == "OK":
+                ok_users += 1
+            elif result.severity == "WARNING":
+                warning_users += 1
+            else:
+                critical_users += 1
+
+        last_user_id = batch_ids[-1]
+
+    return FinancialHealthSummary(
+        total_users=total_users,
+        ok_users=ok_users,
+        warning_users=warning_users,
+        critical_users=critical_users,
+    )
+
+
+async def assert_no_critical_drift_system_wide(db: AsyncSession) -> None:
+    """Pre-cashflow lock: block deposit/withdrawal paths while any wallet is CRITICAL."""
+    summary = await summarize_financial_health(db)
+    if summary.critical_users > 0:
+        raise ConflictError(
+            "CASHFLOW_BLOCKED_CRITICAL_DRIFT",
+            "Deposits and withdrawals are disabled until all ledger mismatches are resolved (manual audit).",
+            meta={"critical_users": summary.critical_users},
         )
 
 
