@@ -20,7 +20,7 @@
 
 ### 1.1 Resumen de Performance — `GET /api/v1/dashboard/summary`
 
-Devuelve las métricas agregadas de rendimiento de apuestas. **No** devuelve saldos de wallet (`available_balance`, `locked_balance`); esos campos viven en la tabla `user_balances` y no tienen endpoint HTTP propio todavía (ver sección 1.3).
+Devuelve las métricas agregadas de rendimiento de apuestas. **No** devuelve saldos de wallet (`available_balance`, `locked_balance`); para esos campos usar `GET /api/v1/wallet/balance` (ver sección 1.3).
 
 **Query Parameters** (todos opcionales):
 
@@ -100,15 +100,17 @@ Este es el endpoint más cercano a un "balance financiero". Devuelve depósitos,
 }
 ```
 
-### 1.3 Balance del Usuario (Wallet) — NO EXISTE ENDPOINT
+### 1.3 Balance del Usuario (Wallet) — `GET /api/v1/wallet/balance`
 
-> **GAP DETECTADO**: El modelo `UserBalance` (`user_balances`) contiene `available_balance`, `locked_balance` y `updated_at`, pero **ningún router HTTP** lo expone actualmente. El frontend tendrá que:
->
-> **Opción A** — Crear un nuevo endpoint `GET /api/v1/balance` (requiere trabajo backend).
->
-> **Opción B** — Derivar el balance estimado del endpoint de cashflow (sección 1.2): `net_cashflow_mxn` como proxy de saldo disponible.
+Devuelve el saldo actual de la billetera del usuario: fondos disponibles y fondos bloqueados en escrow (picks pendientes).
 
-Estructura interna de `user_balances` (para cuando se cree el endpoint):
+**Query Parameters** (opcionales):
+
+| Param     | Type   | Default                                  |
+|-----------|--------|------------------------------------------|
+| `user_id` | `UUID` | `00000000-0000-4000-8000-000000000001`   |
+
+**Response `200 OK`** — `WalletBalanceResponse`:
 
 ```json
 {
@@ -118,6 +120,20 @@ Estructura interna de `user_balances` (para cuando se cree el endpoint):
   "updated_at": "2025-06-15T14:30:00Z"
 }
 ```
+
+**Mapping para el frontend:**
+
+| Frontend mock field  | API field            | Notes                                          |
+|----------------------|----------------------|-------------------------------------------------|
+| `available_balance`  | `available_balance`  | Fondos libres para nuevas apuestas              |
+| `locked_balance`     | `locked_balance`     | Stake bloqueado en picks pendientes (escrow)    |
+| `total_balance`      | Calcular: `available_balance + locked_balance` | El backend no devuelve un total explícito |
+
+**Errores posibles:**
+
+| HTTP | Code                     | Cuándo                                       |
+|------|--------------------------|----------------------------------------------|
+| 404  | `USER_BALANCE_NOT_FOUND` | No existe fila de balance para ese `user_id` |
 
 ### 1.4 Segmentos — `GET /api/v1/dashboard/segments`
 
@@ -147,24 +163,60 @@ Desglose de rendimiento agrupado por una dimensión.
 
 ## 2. Ledger (Libro Mayor)
 
-### 2.1 Estado Actual — NO EXISTE ENDPOINT HTTP
+### 2.1 Historial del Ledger — `GET /api/v1/wallet/ledger`
 
-> **GAP DETECTADO**: Las entradas del ledger (`ledger_entries`) se crean internamente durante el ciclo de vida de un pick (stake lock, payout, loss, refund), pero **no hay router** que las exponga al frontend.
+Devuelve el historial de movimientos del libro mayor para un usuario, ordenado del más reciente al más antiguo. Cada entrada refleja un cambio atómico en los balances (stake lock, payout, loss, refund).
 
-**Modelo interno** `LedgerEntry` (para cuando se cree el endpoint):
+**Query Parameters** (opcionales):
+
+| Param     | Type   | Default                                  | Validación |
+|-----------|--------|------------------------------------------|------------|
+| `user_id` | `UUID` | `00000000-0000-4000-8000-000000000001`   |            |
+| `limit`   | `int`  | `50`                                     | 1–200      |
+
+**Response `200 OK`** — `LedgerHistoryResponse`:
 
 ```json
 {
-  "ledger_entry_id": "e4f5a6b7-...",
-  "user_id": "00000000-0000-4000-8000-000000000001",
-  "amount": "500.00",
-  "type": "PICK_PAYOUT",
-  "reference_id": "d3c2b1a0-...",
-  "balance_after": "15840.50",
-  "locked_after": "2000.00",
-  "created_at": "2025-06-15T14:30:00Z"
+  "items": [
+    {
+      "ledger_entry_id": "e4f5a6b7-...",
+      "amount": "500.00",
+      "type": "PICK_PAYOUT",
+      "reference_id": "d3c2b1a0-...",
+      "balance_after": "15840.50",
+      "locked_after": "2000.00",
+      "created_at": "2025-06-15T14:30:00Z"
+    },
+    {
+      "ledger_entry_id": "a1b2c3d4-...",
+      "amount": "200.00",
+      "type": "PICK_STAKE_LOCK",
+      "reference_id": "f9e8d7c6-...",
+      "balance_after": "15340.50",
+      "locked_after": "2500.00",
+      "created_at": "2025-06-15T12:00:00Z"
+    }
+  ],
+  "total": 42
 }
 ```
+
+**Mapping para el frontend:**
+
+| Frontend mock field | API field        | Notes                                          |
+|---------------------|------------------|-------------------------------------------------|
+| `balance_after`     | `balance_after`  | Saldo disponible tras este movimiento           |
+| `locked_after`      | `locked_after`   | Saldo bloqueado tras este movimiento            |
+| `type`              | `type`           | Enum: ver tabla abajo                           |
+| `amount`            | `amount`         | Monto del movimiento                            |
+| `reference_id`      | `reference_id`   | UUID del pick asociado (nullable)               |
+
+**Errores posibles:**
+
+| HTTP | Code                     | Cuándo                                       |
+|------|--------------------------|----------------------------------------------|
+| 404  | `USER_BALANCE_NOT_FOUND` | No existe fila de balance para ese `user_id` |
 
 **Tipos de entrada del ledger** (`LedgerEntryType`):
 
@@ -175,9 +227,9 @@ Desglose de rendimiento agrupado por una dimensión.
 | `PICK_LOSS`       | Pick perdido: se pierde el stake     | `locked -= stake`                        |
 | `PICK_REFUND`     | Push/void: se devuelve el stake      | `locked -= stake`, `available += stake`  |
 
-### 2.2 Transacciones Contables (Proxy del Ledger) — `GET /api/v1/transactions/`
+### 2.2 Transacciones Contables — `GET /api/v1/transactions/`
 
-Mientras no exista un endpoint de ledger, el historial de transacciones (depósitos, retiros, bonos) es lo más cercano a un "libro mayor" para el frontend.
+Historial de transacciones externas (depósitos, retiros, bonos). Complementa al ledger interno (sección 2.1) que solo registra movimientos de picks.
 
 **Query Parameters** (todos opcionales):
 
@@ -219,11 +271,11 @@ Mientras no exista un endpoint de ledger, el historial de transacciones (depósi
 }
 ```
 
-**Mapping ledger mock → transactions API:**
+**Mapping para el frontend:**
 
 | Frontend mock field | API field          | Notes                                     |
 |---------------------|--------------------|--------------------------------------------|
-| `balance_after`     | **No disponible**  | Solo existe en `ledger_entries` (interno)  |
+| `balance_after`     | Usar `GET /wallet/ledger` | Disponible en el endpoint de ledger (sección 2.1) |
 | `type`              | `type`             | Valores: `deposit`, `withdrawal`, `bonus`, `commission`, `void_refund` |
 | `amount`            | `amount_mxn`       | Ya convertido a MXN                        |
 

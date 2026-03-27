@@ -18,6 +18,7 @@ from app.routers import (
     fiscal,
     reconciliation_admin,
     financial_health_admin,
+    wallet,
 )
 
 
@@ -62,6 +63,7 @@ def create_app() -> FastAPI:
         prefix="/api/v1",
         tags=["admin-financial-health"],
     )
+    app.include_router(wallet.router, prefix="/api/v1", tags=["wallet"])
     return app
 
 
