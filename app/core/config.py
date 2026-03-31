@@ -1,7 +1,10 @@
 from decimal import Decimal
+from uuid import UUID
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+DEFAULT_USER_ID = UUID("00000000-0000-4000-8000-000000000001")
 
 
 class Settings(BaseSettings):

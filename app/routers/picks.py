@@ -2,11 +2,12 @@ from datetime import date
 from typing import Optional
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Header, Request, status
+from fastapi import APIRouter, Depends, Header, Query, Request, status
 from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 import redis.asyncio as aioredis
 
+from app.core.config import DEFAULT_USER_ID
 from app.core.dependencies import get_db, get_redis
 from app.core.exceptions import ConflictError
 from app.core.idempotency import (
@@ -104,6 +105,7 @@ async def list_picks(
     market: Optional[str] = None,
     grade: Optional[PickGrade] = None,
     source: Optional[PickSource] = None,
+    user_id: UUID = Query(default=DEFAULT_USER_ID),
     limit: int = 50,
     offset: int = 0,
     db: AsyncSession = Depends(get_db),
@@ -117,6 +119,7 @@ async def list_picks(
         market=market,
         grade=grade,
         source=source,
+        user_id=user_id,
         limit=limit,
         offset=offset,
     )

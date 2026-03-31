@@ -372,12 +372,16 @@ async def list_picks(
     market: Optional[str] = None,
     grade: Optional[PickGrade] = None,
     source: Optional[PickSource] = None,
+    user_id: Optional[UUID] = None,
     limit: int = 50,
     offset: int = 0,
 ) -> tuple[list[Pick], int]:
     query = select(Pick)
     count_query = select(func.count(Pick.pick_id))
 
+    if user_id is not None:
+        query = query.where(Pick.user_id == user_id)
+        count_query = count_query.where(Pick.user_id == user_id)
     if run_date:
         query = query.where(Pick.run_date == run_date)
         count_query = count_query.where(Pick.run_date == run_date)

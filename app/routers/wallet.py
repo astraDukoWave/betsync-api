@@ -3,6 +3,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import DEFAULT_USER_ID
 from app.core.dependencies import get_db
 from app.schemas.wallet import (
     LedgerEntryResponse,
@@ -13,12 +14,10 @@ from app.services import wallet_service
 
 router = APIRouter(prefix="/wallet")
 
-_SEED_USER = UUID("00000000-0000-4000-8000-000000000001")
-
 
 @router.get("/balance", response_model=WalletBalanceResponse)
 async def get_balance(
-    user_id: UUID = Query(default=_SEED_USER),
+    user_id: UUID = Query(default=DEFAULT_USER_ID),
     db: AsyncSession = Depends(get_db),
 ):
     return await wallet_service.get_balance(db, user_id)
@@ -26,7 +25,7 @@ async def get_balance(
 
 @router.get("/ledger", response_model=LedgerHistoryResponse)
 async def get_ledger(
-    user_id: UUID = Query(default=_SEED_USER),
+    user_id: UUID = Query(default=DEFAULT_USER_ID),
     limit: int = Query(default=50, ge=1, le=200),
     db: AsyncSession = Depends(get_db),
 ):

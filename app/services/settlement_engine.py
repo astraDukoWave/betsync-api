@@ -10,6 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import DEFAULT_USER_ID
 from app.core.exceptions import ConflictError, NotFoundError
 from app.models.ledger import LedgerEntry, LedgerEntryType
 from app.models.outbox import OutboxEvent
@@ -87,6 +88,16 @@ async def execute_settlement(
                         "current_status": pick.status.value,
                         "requested": target_status.value,
                         "pick_id": str(pick_id),
+                    },
+                )
+
+            if pick.user_id is not None and pick.user_id != DEFAULT_USER_ID:
+                raise ConflictError(
+                    "PICK_OWNERSHIP_MISMATCH",
+                    "Pick does not belong to the current operational user",
+                    meta={
+                        "pick_id": str(pick_id),
+                        "pick_user_id": str(pick.user_id),
                     },
                 )
 

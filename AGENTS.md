@@ -3,6 +3,7 @@
 ## Learned User Preferences
 - Prefer minimal, safe changes
 - Always explain why before changing code
+- For non-trivial changes, present plan/files/risks and wait for approval before editing
 - Follow `docs/ai_agent_rules.md` in full
 - Use only the current architecture (routers → services → models)
 
@@ -16,6 +17,6 @@
 - Cache-aside with Redis: always invalidate after Pick mutations
 - Alembic migrations must be additive and safe for large datasets
 - Financial flows use the ledger: balance-changing work runs under `SELECT FOR UPDATE` on the user balance row; pick settlement and ledger lines commit in the same DB transaction; outbox rows carry asynchronous side effects
-- Per-day aggregate recomputation runs in Celery with Redis locking/coalescing so the same `run_date` is not flooded with duplicate tasks
-- Dashboard aggregate reads respect `USE_AGGREGATES_FOR_DASHBOARD` and Redis runtime overrides; stale or internally inconsistent `agg_*` rows trigger controlled fallback to raw `picks` reads where implemented
+- Aggregate consistency is guarded end-to-end: per-day recomputation runs in Celery with Redis lock/coalescing, and dashboard reads honor `USE_AGGREGATES_FOR_DASHBOARD` with runtime overrides plus controlled fallback when `agg_*` rows are stale/inconsistent
+- Reconciliation admin surface is secret-gated via `X-Reconciliation-Secret` / `ADMIN_RECONCILIATION_SECRET`
 - Always use UUID primary keys and timezone-aware timestamps

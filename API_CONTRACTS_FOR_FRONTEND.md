@@ -11,8 +11,9 @@
 2. [Ledger (Libro Mayor)](#2-ledger-libro-mayor)
 3. [Reconciliación (Admin)](#3-reconciliación-admin)
 4. [Fiscal](#4-fiscal)
-5. [Reglas Transversales de UI](#5-reglas-transversales-de-ui)
-6. [Catálogo de Errores](#6-catálogo-de-errores)
+5. [Picks](#5-picks)
+6. [Reglas Transversales de UI](#6-reglas-transversales-de-ui)
+7. [Catálogo de Errores](#7-catálogo-de-errores)
 
 ---
 
@@ -532,9 +533,101 @@ X-Total-Records: 215
 
 ---
 
-## 5. Reglas Transversales de UI
+## 5. Picks
 
-### 5.1 Idempotencia en Operaciones de Escritura
+### 5.1 Listar Picks — `GET /api/v1/picks/`
+
+Devuelve los picks del usuario, paginados y con filtros opcionales. Por defecto filtra por el usuario semilla (`00000000-0000-4000-8000-000000000001`).
+
+**Query Parameters** (todos opcionales):
+
+| Param            | Type         | Default                                | Notes                        |
+|------------------|--------------|----------------------------------------|------------------------------|
+| `user_id`        | `UUID`       | `00000000-0000-4000-8000-000000000001` | Filtra picks por propietario |
+| `run_date`       | `date`       | —                                      | Filtra por fecha de operación|
+| `pick_status`    | `PickStatus` | —                                      | `pending`, `won`, `lost`, `push`, `void` |
+| `sport_id`       | `UUID`       | —                                      |                              |
+| `competition_id` | `UUID`       | —                                      |                              |
+| `market`         | `str`        | —                                      | e.g. `moneyline`             |
+| `grade`          | `PickGrade`  | —                                      | `A`, `B`, `C`                |
+| `source`         | `PickSource` | —                                      | `manual`, `pipeline`         |
+| `limit`          | `int`        | `50`                                   |                              |
+| `offset`         | `int`        | `0`                                    |                              |
+
+**Response `200 OK`** — `PickListResponse`:
+
+```json
+{
+  "items": [
+    {
+      "pick_id": "d3c2b1a0-...",
+      "user_id": "00000000-0000-4000-8000-000000000001",
+      "match_id": "a1b2c3d4-...",
+      "sportsbook_id": "e5f6a7b8-...",
+      "run_date": "2025-06-15",
+      "market": "moneyline",
+      "selection": "Over 2.5",
+      "odds_american": -110,
+      "odds_decimal": "1.9091",
+      "implied_prob": "0.5238",
+      "grade": "A",
+      "stake": "200.00",
+      "status": "pending",
+      "source": "manual",
+      "closing_odds_decimal": null,
+      "clv": null,
+      "confirmed_at": null,
+      "resolved_at": null,
+      "created_at": "2025-06-15T10:00:00Z",
+      "updated_at": "2025-06-15T10:00:00Z"
+    }
+  ],
+  "total": 42,
+  "limit": 50,
+  "offset": 0
+}
+```
+
+### 5.2 Resolver Pick — `PATCH /api/v1/picks/{pick_id}/result`
+
+Resuelve un pick a un estado terminal (`won`, `lost`, `push`, `void`).
+
+**Path Parameters:**
+
+| Param     | Type   |
+|-----------|--------|
+| `pick_id` | `UUID` |
+
+**Request Body** — `PickResolve`:
+
+```json
+{
+  "status": "won",
+  "closing_odds_decimal": "1.85"
+}
+```
+
+| Field                  | Type         | Required | Notes                                      |
+|------------------------|--------------|----------|--------------------------------------------|
+| `status`               | `PickStatus` | Sí       | `won`, `lost`, `push`, `void` (no `pending`) |
+| `closing_odds_decimal` | `Decimal`    | No       | Odds de cierre para cálculo de CLV         |
+
+**Validación interna de propiedad:** El backend verifica que el pick pertenezca al usuario operativo actual (`DEFAULT_USER_ID`). Si `pick.user_id` existe y no coincide, retorna `409 PICK_OWNERSHIP_MISMATCH`. Esta validación es transparente para el frontend — no requiere enviar `user_id`.
+
+**Errores posibles:**
+
+| HTTP | Code                        | Cuándo                                             |
+|------|-----------------------------|----------------------------------------------------|
+| 404  | `PICK_NOT_FOUND`            | No existe pick con ese ID                          |
+| 409  | `TERMINAL_STATE_CONFLICT`   | Pick ya resuelto a otro estado terminal            |
+| 409  | `PICK_OWNERSHIP_MISMATCH`   | Pick no pertenece al usuario operativo             |
+| 409  | `SETTLEMENT_ALREADY_DECIDED`| Void no puede sobrescribir payout/loss existente   |
+
+---
+
+## 6. Reglas Transversales de UI
+
+### 6.1 Idempotencia en Operaciones de Escritura
 
 **Regla**: Todo `POST` que cree o mueva dinero **debe** incluir el header `X-Idempotency-Key` (o `Idempotency-Key` para picks).
 
@@ -573,7 +666,7 @@ const isReplay = response.headers.get("X-Idempotent-Replay") === "true";
 | 409  | `IDEMPOTENCY_BODY_MISMATCH`| Misma key con body diferente                         | Generar nueva key; alertar al usuario|
 | 503  | —                          | Redis caído (fail closed — no se permite crear)      | Mostrar "Servicio temporalmente degradado" |
 
-### 5.2 Drift Gate — Protección Financiera
+### 6.2 Drift Gate — Protección Financiera
 
 **Regla**: Cuando el sistema detecta corrupción en el estado financiero (ledger no cuadra con balances), bloquea todas las operaciones de dinero.
 
@@ -624,7 +717,7 @@ HTTP 409 Conflict
 2. Mostrar un banner de alerta: _"El sistema financiero está en modo protegido. Contacta al administrador."_
 3. En el panel de admin: indicar con badge rojo y dirigir a la pantalla de reconciliación.
 
-### 5.3 Formato Estándar de Error
+### 6.3 Formato Estándar de Error
 
 Todos los errores del API siguen esta estructura (`ErrorResponse`):
 
@@ -650,7 +743,7 @@ Todos los errores del API siguen esta estructura (`ErrorResponse`):
 
 ---
 
-## 6. Catálogo de Errores
+## 7. Catálogo de Errores
 
 ### Errores financieros
 
@@ -674,6 +767,7 @@ Todos los errores del API siguen esta estructura (`ErrorResponse`):
 | Code                             | HTTP | Trigger                                         |
 |----------------------------------|------|--------------------------------------------------|
 | `SETTLEMENT_LEDGER_TYPE_MISMATCH`| 409  | Pick ya liquidado con otro outcome               |
+| `PICK_OWNERSHIP_MISMATCH`       | 409  | Pick no pertenece al usuario operativo actual    |
 | `SETTLEMENT_PICK_NOT_PENDING`    | 422  | Pick no está en `pending`                        |
 | `LEDGER_SETTLEMENT_AMBIGUOUS`    | 422  | Múltiples filas de settlement para un pick       |
 
