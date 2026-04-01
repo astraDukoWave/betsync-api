@@ -230,6 +230,10 @@ async def record_settlement(
             )
 
     now = datetime.now(timezone.utc)
+    
+    # Ensure timestamp attributes are loaded before we modify them (avoid lazy load in async)
+    await db.refresh(pick, attribute_names=['created_at', 'updated_at', 'confirmed_at'])
+    
     pick.status = status
     pick.resolved_at = now
     pick.settled_return, pick.profit = _settlement_for_status(
@@ -242,7 +246,7 @@ async def record_settlement(
             f"profit must match accounting formula: got {pick.profit!s} "
             f"expected {expected!s}"
         )
-
+    
     DomainValidator.validate(
         pick, prior, profit_tolerance=settings.pick_profit_tolerance
     )

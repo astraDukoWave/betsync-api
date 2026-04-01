@@ -9,6 +9,7 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.core.config import DEFAULT_USER_ID
 from app.core.exceptions import ConflictError, NotFoundError
@@ -70,7 +71,12 @@ async def execute_settlement(
     try:
         async with db.begin_nested():
             result = await db.execute(
-                select(Pick).where(Pick.pick_id == pick_id).with_for_update()
+                select(Pick)
+                .options(selectinload(Pick.match))
+                .options(selectinload(Pick.sportsbook))
+                .where(Pick.pick_id == pick_id)
+                .with_for_update()
+                .execution_options(populate_existing=True)
             )
             pick = result.scalar_one_or_none()
             if not pick:
