@@ -1,10 +1,11 @@
 import uuid
 from datetime import date
 
-from fastapi import APIRouter, Depends, Query, status
+from fastapi import APIRouter, Depends, Query, status, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 import redis.asyncio as aioredis
 
+from app.core.config import settings
 from app.core.dependencies import get_db, get_redis
 from app.core.exceptions import ConflictError
 from app.models.pick import PickSource, PickStatus
@@ -79,3 +80,76 @@ async def get_suggestions(
         limit=50,
     )
     return items
+
+
+# ── DEV-ONLY ─────────────────────────────────────────────────────────────────
+# This endpoint is only available when DEBUG=true. It exists to support fast
+# local iteration cycles without restarting the DB.
+# NEVER expose this in production (DEBUG must be false).
+# ─────────────────────────────────────────────────────────────────────────────
+
+@router.post(
+    "/dev/reset",
+    status_code=status.HTTP_200_OK,
+    summary="[DEV-ONLY] Reset pipeline data",
+    description=(
+        "Deletes all pipeline picks, parlay_picks, parlays, World Cup matches "
+        "and Redis pipeline keys. Only available when DEBUG=true. "
+        "Use `python scripts/reset_pipeline_data.py` for the same effect from CLI."
+    ),
+    tags=["pipeline-dev"],
+)
+async def dev_reset_pipeline(
+    db: AsyncSession = Depends(get_db),
+    redis: aioredis.Redis = Depends(get_redis),
+):
+    """DEV-ONLY: clear pipeline state so the pipeline can be re-run cleanly."""
+    if not settings.debug:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="This endpoint is only available when DEBUG=true.",
+        )
+
+    from sqlalchemy import text
+
+    # FK-safe deletion order
+    r1 = await db.execute(
+        text("""
+            DELETE FROM parlay_picks
+            WHERE pick_id IN (
+                SELECT pick_id FROM picks WHERE source = 'pipeline'
+            )
+        """)
+    )
+    r2 = await db.execute(text("DELETE FROM picks WHERE source = 'pipeline'"))
+    r3 = await db.execute(text("DELETE FROM parlays"))
+    r4 = await db.execute(
+        text("""
+            DELETE FROM matches
+            WHERE competition_id IN (
+                SELECT competition_id FROM competitions
+                WHERE name ILIKE '%World Cup%'
+            )
+        """)
+    )
+    await db.commit()
+
+    # Flush Redis pipeline keys
+    patterns = ["pipeline:ran:*", "job:*", "odds:idempotency:*"]
+    redis_deleted = 0
+    for pattern in patterns:
+        keys = await redis.keys(pattern)
+        if keys:
+            await redis.delete(*keys)
+            redis_deleted += len(keys)
+
+    return {
+        "deleted": {
+            "parlay_picks": r1.rowcount,
+            "picks": r2.rowcount,
+            "parlays": r3.rowcount,
+            "matches": r4.rowcount,
+            "redis_keys": redis_deleted,
+        },
+        "message": "Pipeline data reset. Run POST /pipeline/run to regenerate.",
+    }

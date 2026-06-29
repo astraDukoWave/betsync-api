@@ -393,6 +393,150 @@ All errors follow a standardized envelope:
 
 ---
 
+## Radar de Predicciones — Mundial 2026 (Local Setup)
+
+Esta sección cubre cómo levantar el pipeline del Radar de Predicciones del FIFA World Cup 2026 usando datos reales de [The Odds API](https://the-odds-api.com) en local.
+
+### Prerrequisitos
+
+- PostgreSQL local en `localhost:5432` (usuario `betsync`, password `betsync_pass`, DB `betsync`)
+- Redis local en `localhost:6379`
+- Celery worker corriendo
+- API key de The Odds API (free tier: 500 req/mes)
+
+### Paso 1 — Configurar `.env`
+
+```bash
+cp .env.example .env
+```
+
+Edita `.env` y pon tu API key:
+
+```bash
+ODDS_API_KEY=tu_api_key_aqui
+DEBUG=true
+WORLD_CUP_SPORT_SLUG=soccer_fifa_world_cup_2026
+```
+
+> 💡 **Verificar el slug correcto:** El slug del Mundial puede variar.  
+> Confirma con: `curl "https://api.the-odds-api.com/v4/sports?apiKey=TU_KEY" | jq '.[] | select(.key | contains("world_cup"))'`
+
+También puedes exportar la key en el shell (pydantic-settings la levanta automáticamente):
+
+```bash
+export ODDS_API_KEY=tu_api_key_aqui
+```
+
+### Paso 2 — Levantar servicios locales
+
+```bash
+# PostgreSQL y Redis (si no están corriendo)
+brew services start postgresql@16
+brew services start redis
+
+# O con Docker (si los tienes en compose)
+# docker compose up postgres redis -d
+```
+
+### Paso 3 — Aplicar migraciones
+
+```bash
+alembic upgrade head
+```
+
+### Paso 4 — Seed sport + competition
+
+```bash
+python scripts/seed_world_cup.py
+```
+
+Salida esperada:
+```
+🌍 BetSync — FIFA World Cup 2026 Seed
+
+  ✚ Sport created         — id=<uuid>  slug=soccer
+  ✚ Competition created   — id=<uuid>  name='FIFA World Cup 2026'
+
+  ✅ Seed complete. Ready to run the pipeline.
+```
+
+### Paso 5 — Levantar la API
+
+```bash
+uvicorn app.main:app --reload --port 8000
+```
+
+### Paso 6 — Levantar el Celery worker
+
+```bash
+celery -A app.worker.celery_app worker -Q pipeline --loglevel=info
+```
+
+### Paso 7 — Correr el pipeline
+
+```bash
+# Forzar ejecución (útil la primera vez y después de un reset)
+curl -s -X POST http://localhost:8000/api/v1/pipeline/run \
+  -H "Content-Type: application/json" \
+  -d '{"force": true}' | jq .
+```
+
+Salida esperada:
+```json
+{
+  "job_id": "abc-123-...",
+  "status": "queued",
+  "message": "Pipeline enqueued for 2026-06-29. Poll /pipeline/jobs/abc-123-... for status."
+}
+```
+
+Pollea el estado del job:
+```bash
+curl -s http://localhost:8000/api/v1/pipeline/jobs/<job_id> | jq .
+```
+
+### Paso 8 — Inspeccionar suggestions
+
+```bash
+# Ver suggestions del radar
+curl -s http://localhost:8000/api/v1/pipeline/suggestions | jq 'length, .[0]'
+
+# Ver todas con detalle
+curl -s http://localhost:8000/api/v1/pipeline/suggestions | jq '.[] | {pick_id, selection, market, grade, odds_american, implied_prob}'
+```
+
+---
+
+### Reset local (para volver a empezar)
+
+**Opción A — Script CLI (requiere confirmación):**
+```bash
+python scripts/reset_pipeline_data.py
+# Vista previa sin borrar:
+python scripts/reset_pipeline_data.py --dry-run
+```
+
+**Opción B — HTTP (solo cuando DEBUG=true):**
+```bash
+curl -s -X POST http://localhost:8000/api/v1/pipeline/dev/reset | jq .
+```
+
+Después del reset, vuelve al Paso 4 para re-sembrar matches y re-correr el pipeline.
+
+---
+
+### Troubleshooting
+
+| Síntoma | Causa probable | Solución |
+|---------|---------------|----------|
+| `picks_suggested: 0` después de correr | Slug incorrecto o API key inválida | Verifica `WORLD_CUP_SPORT_SLUG` y el log del worker |
+| `No active World Cup competition in DB` | No se corrió el seed | `python scripts/seed_world_cup.py` |
+| `Invalid API key` en logs | ODDS_API_KEY incorrecta o sin cargar | Verifica `.env` o `echo $ODDS_API_KEY` |
+| Pipeline dice `already ran` | Ya corrió hoy | Usa `force: true` en el body del POST |
+| Picks generados pero `suggestions` vacío | Picks no son `source=pipeline, status=pending` | Revisa con `SELECT * FROM picks WHERE source='pipeline'` |
+
+---
+
 ## License
 
 Private repository. All rights reserved.
