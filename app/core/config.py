@@ -43,6 +43,11 @@ class Settings(BaseSettings):
     idempotency_processing_ttl_seconds: int = 120
     idempotency_result_ttl_seconds: int = 1800
 
+    # ── World Cup 2026 pipeline ───────────────────────────────────────────────
+    # The Odds API v4 sport slug for FIFA World Cup 2026.
+    # Verify available slugs: GET /v4/sports?apiKey=YOUR_KEY
+    world_cup_sport_slug: str = "soccer_fifa_world_cup_2026"
+
     model_config = SettingsConfigDict(
         env_file=".env", case_sensitive=False, extra="ignore",
     )
