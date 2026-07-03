@@ -46,7 +46,7 @@ class Settings(BaseSettings):
     # ── World Cup 2026 pipeline ───────────────────────────────────────────────
     # The Odds API v4 sport slug for FIFA World Cup 2026.
     # Verify available slugs: GET /v4/sports?apiKey=YOUR_KEY
-    world_cup_sport_slug: str = "soccer_fifa_world_cup_2026"
+    world_cup_sport_slug: str = "soccer_fifa_world_cup"
 
     model_config = SettingsConfigDict(
         env_file=".env", case_sensitive=False, extra="ignore",
