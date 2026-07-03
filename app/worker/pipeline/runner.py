@@ -332,9 +332,20 @@ class PipelineRunner:
         return picks
 
     def _find_best_odds(self, bookmakers: list[dict]) -> dict:
-        """Aggregate best (highest) price per outcome across all bookmakers."""
+        """Aggregate per outcome: best (highest) price across bookmakers, plus
+        the full per-bookmaker price list (book_prices) needed for Sprint 1c
+        consensus/breadth scoring.
+
+        `price` remains the best price — required for backward compatibility
+        with _process_odds (grade calculation). Do not remove or rename it.
+
+        In American odds the numerically highest value is best for the bettor
+        (e.g. -122 > -127 > -130), so the existing ``price > existing["price"]``
+        comparison is the correct criterion and is preserved unchanged.
+        """
         best: dict[str, list[dict]] = {}
         for bm in bookmakers:
+            bookmaker_key = bm.get("key", "unknown")
             for mkt in bm.get("markets", []):
                 mkt_key = mkt.get("key", "h2h")
                 if mkt_key not in best:
@@ -346,10 +357,19 @@ class PipelineRunner:
                         (o for o in best[mkt_key] if o["name"] == name), None
                     )
                     if existing:
+                        existing["book_prices"].append(
+                            {"bookmaker": bookmaker_key, "price": price}
+                        )
                         if price > existing["price"]:
                             existing["price"] = price
                     else:
-                        best[mkt_key].append({"name": name, "price": price})
+                        best[mkt_key].append({
+                            "name": name,
+                            "price": price,
+                            "book_prices": [
+                                {"bookmaker": bookmaker_key, "price": price}
+                            ],
+                        })
         return best
 
     # ──────────────────────────────────────────────────────────────────────
