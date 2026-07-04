@@ -68,6 +68,14 @@ class Pick(Base):
         Numeric(6, 4), nullable=True
     )
     clv: Mapped[Optional[Decimal]] = mapped_column(Numeric(6, 4), nullable=True)
+    # --- Sprint 1c: market-consensus aggregates (calculated from book_prices[] in pipeline) ---
+    consensus_std: Mapped[Optional[Decimal]] = mapped_column(
+        Numeric(5, 4), nullable=True
+    )
+    best_vs_avg: Mapped[Optional[Decimal]] = mapped_column(
+        Numeric(5, 4), nullable=True
+    )
+    breadth_count: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     confirmed_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
