@@ -71,3 +71,10 @@ score on `Pick` (new column + migration) or compute it at read time only.
 - Docker/Codespaces split: this Mac (2017 Air) cannot run Docker locally.
   Any prompt asking an agent to run tests or docker compose must target
   Codespaces, not local Cursor.
+- GitHub's REST API (`create_or_update_file`, used by MCP-based agents to
+  write files directly) can set file content but NOT the git file mode.
+  Scripts meant to be executable (like `init.sh`) created via this API land
+  as `100644` and need a follow-up commit from a real git environment
+  (Codespaces) with `chmod +x` to become `100755`. See commit `5cc997d` for
+  the actual fix. Check file mode explicitly after creating any script via
+  an MCP/API-based file write — don't assume it's executable.
