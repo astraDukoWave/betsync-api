@@ -1,0 +1,71 @@
+{
+  "project": "betsync-api",
+  "last_updated": "2026-07-03",
+  "rules": {
+    "single_active_feature": true,
+    "passing_requires_evidence": true,
+    "do_not_skip_verification": true
+  },
+  "status_legend": {
+    "not_started": "Work has not begun.",
+    "in_progress": "The feature is the current active task.",
+    "blocked": "Work cannot continue until a documented blocker is resolved.",
+    "passing": "Required verification has passed and evidence is recorded."
+  },
+  "features": [
+    {
+      "id": "sprint-1a-radar-rename",
+      "priority": 1,
+      "area": "betsync-web / radar",
+      "title": "Rename edge_pct to market_prob across Radar UI",
+      "user_visible_behavior": "The Radar no longer labels implied market probability as 'edge' anywhere in the UI (KPI bar, grid, filters, sort).",
+      "status": "passing",
+      "verification": [
+        "grep -rn 'edge_pct|\\.confidence' lib/types.ts components/radar/ components/pipeline/ app/radar/ (must return zero hits outside AIConfig.min_edge_pct)"
+      ],
+      "evidence": ["betsync-web main commit e2253b2"],
+      "notes": "AIConfig.min_edge_pct and app/settings/page.tsx intentionally excluded — tracked separately as sprint-1-bis-settings-keys."
+    },
+    {
+      "id": "sprint-1b-book-prices",
+      "priority": 2,
+      "area": "betsync-api / pipeline",
+      "title": "Retain per-bookmaker prices in _find_best_odds()",
+      "user_visible_behavior": "No direct user-visible change. Internal: each outcome in the pipeline now carries book_prices[] (bookmaker + price) alongside the existing best price, as the data foundation for Sprint 1c scoring.",
+      "status": "passing",
+      "verification": [
+        "docker compose run --rm api pytest tests/test_pipeline.py tests/test_picks.py -v",
+        "Must show 12/12 passing (4 pre-existing TestPredictor + 8 TestFindBestOdds)"
+      ],
+      "evidence": ["betsync-api main commit bf897f1", "PR #8 (astraDukoWave/betsync-api)"],
+      "notes": "price field unchanged for backward compat with _process_odds. No Pick model columns added, no Alembic migration. Merge also cleaned an unrelated config.py drift (world_cup_sport_slug) that had accidentally entered the branch from a stale local main — resolved by syncing to origin/main's c848e1b before merge."
+    },
+    {
+      "id": "sprint-1c-consensus-score",
+      "priority": 3,
+      "area": "betsync-api / pipeline",
+      "title": "Calculate consensus_std, best_vs_avg, breadth_count from book_prices",
+      "user_visible_behavior": "Radar grade (A/B/C) is based on a real confidence score (bookmaker consensus + best-line deviation + market breadth) instead of a fixed implied_prob threshold.",
+      "status": "not_started",
+      "verification": [
+        "pytest tests/test_pipeline.py::TestConfidenceScore (to be written)",
+        "Manual check: grade assignment no longer reads config['min_implied_prob_class_a/b'] directly in _process_odds"
+      ],
+      "evidence": [],
+      "notes": "Depends on sprint-1b-book-prices (passing). Requires deciding whether confidence_score is persisted (new Pick column + Alembic migration) or computed at read time only."
+    },
+    {
+      "id": "sprint-1-bis-settings-keys",
+      "priority": 4,
+      "area": "betsync-web + betsync-api / settings",
+      "title": "Fix disconnected Settings panel config keys",
+      "user_visible_behavior": "Editing Min Edge, Min Grade, Max Picks/Day, or Unit Size in /settings actually changes pipeline behavior on the next run.",
+      "status": "blocked",
+      "verification": [
+        "Change a value in /settings, trigger a pipeline run, confirm the effect via runner.py's _load_config() output"
+      ],
+      "evidence": [],
+      "notes": "BLOCKER: product decision needed — should Settings expose min_implied_prob_class_a AND class_b as two separate fields, or one field with a translation layer? Verified none of the 5 keys written by app/settings/page.tsx (min_edge_pct, min_grade, max_picks_per_day, unit_size_usd, ai_model) match any key runner.py._load_config() reads (min_implied_prob_class_a, min_implied_prob_class_b, min_parlay_odds_total, active_competition_tiers, pipeline_min_grade). Deprioritized vs. 1c because astraDuko is the only active user today; re-prioritize immediately if a second user starts touching /settings."
+    }
+  ]
+}
